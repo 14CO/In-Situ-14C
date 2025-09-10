@@ -8,12 +8,19 @@ Calculates in-situ 14CO produced by cosmic ray muons in ice, starting from prima
 ### Required Python Libraries
 
 numpy
+
 matplotlib
+
 MCEq
+
 crflux
+
 tqdm
+
 pandas
+
 astropy.io
+
 daemonflux
 
 ## File Guide
