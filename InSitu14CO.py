@@ -294,7 +294,7 @@ class Propagator:
         
         self.Phi0 = np.zeros((0,2,len(self.E)))
         #Phi0
-        #axis0 - Primary Model (Energy spectrum & Time dependence)
+        #axis0 - Primary Model
         #axis1 - Particle Species (proton, neutron)
         #axis2 - Primary Energy
         
@@ -1629,6 +1629,8 @@ class Propagator:
         #axis2 - Primary Energy
 
         # Currently not normalizing to Phi0
+        
+        E_pred, Beta_pred = self.Heisinger()
 
         Phi, R = self.phi_all(self.h, self.dh, H) # Total Muon Flux, Negative Muon Stopping Rate
 
@@ -1636,7 +1638,7 @@ class Propagator:
 
         P_fast = self.sigma_0 * Phi * E_pred**self.alpha * Beta_pred * self.N
 
-        P_14C = np.moveaxis([P_fast, P_neg], 0, 1) /100 * 60 * 60 * 24 * 365.25 # g^-1, a^-1
+        P_14C = np.reshape([P_fast, P_neg], (1,2,-1)) /100 * 60 * 60 * 24 * 365.25 # g^-1, a^-1
 
         #rescale = np.ones((np.shape(Phi0)[0], 1))
         
@@ -1645,7 +1647,7 @@ class Propagator:
         #axis2 - Production Mode (fast, neg)
         #axis3 - depth (top -> bottom)
 
-        return P_14C
+        return P_14C * np.ones((np.shape(Phi0)[0],1,1))
     
     def get_mceq_path(self, mceq, cTH):
         
@@ -2375,6 +2377,8 @@ class Propagator:
             
         """
         
+        # Add models that directly load in values
+        
         self.Phi0 = Phi0
         #Phi0
         #axis0 - Primary Model (Energy spectrum & Time dependence)
@@ -2537,6 +2541,34 @@ class Propagator:
             return self.Phi0
         return
     
+    # def set_primary_data
+    
+    # def set_atm_data
+    
+    # def set_ice_data
+    
+    # def set_prod_data
+    
+    # def set_CO_data
+    
+    # def set_array
+    
+    # def plot_primary
+    
+    # def plot_atm
+    
+    # def plot_ice
+    
+    # def plot_prod
+    
+    # def plot_CO
+    
+    # def save_primary_to_csv
+    
+    # def save_atm_to_csv
+    
+    # def save_ice_to_csv
+    
     def save_prod_to_csv(self, folder=''):
         if folder != '':
             folder = folder+'/'
@@ -2561,9 +2593,4 @@ class Propagator:
         
         return
     
-    # TO DO
-    # save data to csv
-    # plot data
-    # load fits
-    # load data points
-    # option to load a matrix for calculation
+    # def save_CO_to_csv
