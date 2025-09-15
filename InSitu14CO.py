@@ -23,14 +23,25 @@ from astropy.io import fits
 
 import daemonflux
 
-#UNITS : cgs
-#(in progress)
-
 # could split this into:
 # Sites
 # Calculation Steps (Models)
-# Data points
+# Datasets
 
+# class ModelStep:
+    # function
+    # list of parameters
+    # model name
+    # naming convention
+    # plotting format
+
+# class Dataset:
+    # table of values
+    # errors
+    # dataset name
+    # plotting format
+
+# class Site:
 class Propagator:
     """
     Class for propagating primary cosmic rays to atmospheric muons, underground muons, in-situ 14C production rates, and 14CO profiles
@@ -297,6 +308,8 @@ class Propagator:
         #axis0 - Primary Model
         #axis1 - Particle Species (proton, neutron)
         #axis2 - Primary Energy
+        
+        #self.Phi0_data = {}
         
         self.Phi_atm = np.zeros((0,0,len(self.cosTH),2,len(self.E)))
         #Phi_atm
