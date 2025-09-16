@@ -28,18 +28,23 @@ import daemonflux
 # Calculation Steps (Models)
 # Datasets
 
-# class ModelStep:
-    # function
-    # list of parameters
-    # model name
-    # naming convention
-    # plotting format
+class ModelStep:
 
-# class Dataset:
-    # table of values
-    # errors
-    # dataset name
-    # plotting format
+    def __init__(self, function, params, name):
+        self.function = function
+        self.params = params
+        self.name = name
+        # params naming convention?
+        # plotting format?
+
+class Dataset:
+
+    def __init__(self, index, values, errors, name):
+        self.index = index
+        self.values = values
+        self.errors = errors
+        self.name = name
+        # plotting format?
 
 # class Site:
 class Propagator:
