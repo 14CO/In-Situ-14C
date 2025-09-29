@@ -23,26 +23,72 @@ from astropy.io import fits
 
 import daemonflux
 
+import Functions_14CO as F
+
 # could split this into:
 # Sites
 # Calculation Steps (Models)
 # Datasets
 
+# I can speed up in-ice calculations by capping muon energy at 100 TeV
+
 class ModelStep:
 
-    def __init__(self, function, params, name):
+    def __init__(self, function=None, params=None, name=''):
         self.function = function
-        self.params = params
-        self.name = name
+        if type(params) is list or type(params) is np.ndarray:
+            self.params = params
+        else:
+            self.params = [params]
+        if type(name) is list or type(name) is np.ndarray:
+            self.names = name
+        else:
+            self.names = [name]
+        
+        if len(self.names) > len(self.params):
+            self.names = self.names[:len(self.params)]
+        elif len(self.names) < len(self.params):
+            if self.names[0] == '':
+                self.names = ['']*len(self.params)
+            else:
+                self.names = ['{}-{}'.format(self.names[0], p) for p in self.params]
+        
+        if self.function is None:
+            self.input = ''
+        else:
+            self.input = self.function(None)
+            
+        if self.input != '':
+            self.names = ['_'+n if n!='' else n for n in self.names]
+        
         # params naming convention?
         # plotting format?
+    
+    def run(self, Prop):
+        if self.function is None:
+            return np.array(self.params)
+        
+        return np.concatenate([self.run_solo(Prop, p) for p in self.params])
+    
+    def run_solo(self, Prop, p):
+        if type(p) is tuple:
+            return self.function(Prop, *p)
+        elif type(p) is dict:
+            return self.function(Prop, **p)
+        elif p is None:
+            return self.function(Prop)
+        else:
+            return self.function(Prop, p)
 
 class Dataset:
 
-    def __init__(self, index, values, errors, name):
-        self.index = index
-        self.values = values
-        self.errors = errors
+    def __init__(self, x, y=None, z=None, x_err=None, y_err=None, z_err=None, name=None):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.x_err = x_err
+        self.y_err = y_err
+        self.z_err = z_err
         self.name = name
         # plotting format?
 
@@ -222,7 +268,7 @@ class Propagator:
         Dictionary of functions to be run and their parameters, indexed by a name
         primary CR flux -> 14CO profile
     """
-    def __init__(self, pressure = 65800, elev=3120, rho_ice = 0.9239, f_factors = [0.072, 0.066], ice_eq_depth_file = 'Real_vs_ice_eq_depth.csv', age_scale_file = 'DomeC_age_scale_Apr2023.csv', z_min = 0, z_deep = 300, z_start = 96.5, sample_length = 20, N_ang = 10, logE_min = -1, logE_max = 11, dlogE = 0.1):
+    def __init__(self, pressure = 65800, elev=3120, rho_ice = 0.9239, f_factors = [0.072, 0.066], ice_eq_depth_file = 'Real_vs_ice_eq_depth.csv', age_scale_file = 'DomeC_age_scale_Apr2023.csv', z_min = 0, z_deep = 300, z_start = 96.5, sample_length = 20, N_ang = 10, logE_min = -1, logE_max = 11, logE_mu_max = 7, dlogE = 0.1):
         """
         
         Parameters
@@ -277,7 +323,7 @@ class Propagator:
         self.set_zenith_bins(N_ang)
         
         # set energy bins (default 120 equally space between logE = 1e-1 and 1e11)
-        self.set_energy_bins(logE_min, logE_max, dlogE)
+        self.set_energy_bins(logE_min, logE_max, logE_mu_max, dlogE)
         
         # set pressure used in Balco calculation (default = 65800 Pa for Dome C, Antarctica)
         self.set_pressure(pressure)
@@ -296,8 +342,6 @@ class Propagator:
         
         # 14C Decay parameter
         self.lambd = 1.21e-4 #yr^-1
-
-        self.set_models()
             
         self.p_models = [(pm.GlobalSplineFitBeta, None), (pm.HillasGaisser2012, "H3a"), (pm.HillasGaisser2012, "H4a"), (pm.PolyGonato, False),
                    (pm.GaisserStanevTilav, "3-gen"), (pm.GaisserStanevTilav, "4-gen"), (pm.CombinedGHandHG, "H3a"),
@@ -308,42 +352,22 @@ class Propagator:
                       'ZatsepinSokolskaya pamela', 'ZatsepinSokolskaya default', 'GaisserHonda',
                       'Thunman', 'SimplePowerlaw27']
         
-        self.Phi0 = np.zeros((0,2,len(self.E)))
-        #Phi0
-        #axis0 - Primary Model
-        #axis1 - Particle Species (proton, neutron)
-        #axis2 - Primary Energy
+        self.stages = ['primary',
+                       'atm',
+                       'ice',
+                       'prod',
+                       'CO'
+                      ]
         
-        #self.Phi0_data = {}
+        self.Phi = dict()
+        self.clear_Phi()
         
-        self.Phi_atm = np.zeros((0,0,len(self.cosTH),2,len(self.E)))
-        #Phi_atm
-        #axis0 - Atmospheric Model
-        #axis1 - Primary Model
-        #axis2 - Zenith Angle
-        #axis3 - Muon Charge (positive, negative)
-        #axis4 - Muon Energy
+        self.data = dict()
+        self.set_data()
         
-        self.Phi_ice = np.zeros((0,0,len(self.cosTH),2,len(self.E),len(self.z_bins)))
-        #Phi_ice
-        #axis0 - Atmospheric & Ice Models
-        #axis1 - Primary Model
-        #axis2 - Muon Charge (positive, negative)
-        #axis3 - Muon Energy
-        #axis4 - depth bin EDGES (top -> bottom)
-        
-        self.P_14C = np.zeros((0,0,2,len(self.z)))
-        #P_14C
-        #axis0 - Production, Atmospheric & Ice Models
-        #axis1 - Primary Model
-        #axis2 - Production Mode (fast, neg)
-        #axis3 - depth (top -> bottom)
-        
-        self.CO = np.zeros((0,0,len(self.z)))
-        #CO
-        #axis0 - Flow, Production, Atmospheric & Ice Models
-        #axis1 - Primary Model
-        #axis2 - depth (top -> bottom)
+        self.models = dict()
+        self.model_names = dict()
+        self.set_models()
         
 
     def argnear_below(self, x, a): 
@@ -665,7 +689,7 @@ class Propagator:
         
         return
     
-    def set_energy_bins(self, logE_min = -1, logE_max = 11, dlogE = 0.1):
+    def set_energy_bins(self, logE_min = -1, logE_max = 11, logE_mu_max = 7, dlogE = 0.1):
         
         """
         Sets up energy bins
@@ -683,6 +707,8 @@ class Propagator:
         self.logE_min = logE_min # minimum energy (log10 GeV)
         self.logE_max = logE_max # maximum energy (log10 GeV)
         self.dlogE = dlogE # energy bin width (log10 GeV)
+        self.logE_mu_max = logE_mu_max
+        
 
         # Define energy bins
         self.logE_bins = np.arange(self.logE_min, self.logE_max+self.dlogE, self.dlogE) # log10 GeV
@@ -690,6 +716,12 @@ class Propagator:
         self.E_bins = 10.**(self.logE_bins) # GeV
         self.E = 10.**(self.logE) # bin-average of E (GeV)
         self.dE = np.diff(self.E_bins) # bin-width of E (GeV)
+        
+        self.logE_mu_bins = np.arange(self.logE_min, self.logE_mu_max+self.dlogE, self.dlogE)
+        self.logE_mu = (self.logE_mu_bins[:-1]+self.logE_mu_bins[1:])/2 # log10 GeV
+        self.E_mu_bins = 10.**(self.logE_mu_bins) # GeV
+        self.E_mu = 10.**(self.logE_mu)
+        self.dE_mu = np.diff(self.E_mu_bins)
 
         # how to average E?  Currently doing geometric mean, but maybe there's a better way.
         
@@ -853,1531 +885,130 @@ class Propagator:
         
         return
     
-    def add_mceq_models(self, atm = False, ice = False, atmice=False, interaction_models = ["SIBYLL-2.3c","SIBYLL-2.3","SIBYLL-2.1","EPOS-LHC","QGSJET-II-04","DPMJET-III",'DPMJETIII191'], density_models = [('CORSIKA', ('USStd', None)), ('CORSIKA',('SouthPole', 'December'))], density_names = ['CORSIKA_USStd', 'CORSIKA_SP_Dec']):
+    def set_models(self, clear=True, update_names=True, **kwargs):
         
-        """
+        for s in self.stages:
+            new_models = [ModelStep(*m) for m in kwargs.get(s, [])]
+            if clear:
+                self.models[s] = new_models
+            else:
+                self.models[s] += new_models
         
-        
-        Parameters
-        ---------------
-        
-        """
-        
-        # default functions & parameters
-        #elevs = [0,3120]
-        #self.interaction_models = ["SIBYLL-2.3c","SIBYLL-2.3","SIBYLL-2.1","EPOS-LHC","QGSJET-II-04","DPMJET-III",'DPMJETIII191']
-        #self.density_models = [('CORSIKA', ('USStd', None)), ('CORSIKA',('SouthPole', 'December'))]#,('CORSIKA',('SouthPole', 'June'))]
-        #self.density_names = ['CORSIKA_USStd', 'CORSIKA_SP_Dec']#,'CORSIKA_SP_Jun']
-        
-        if atm:
-            for j,inter in enumerate(self.interaction_models):
-                for k,d in enumerate(self.density_models):
-                    self.atm.append([self.MCEq_atm, (inter, d)])
-                    self.atm_labels.append('MCEq-{}-{}'.format(inter, self.density_names[k]))
-            
-        if ice:
-            for j,inter in enumerate(self.interaction_models):
-                self.ice.append([self.MCEq_ice, (inter)])
-                self.ice_labels.append('_MCEq-{}'.format(inter))
-
-        if atmice:
-            for j,inter in enumerate(self.interaction_models):
-                for k,d in enumerate(self.density_models):
-                    self.atmice.append([self.MCEq_atmice, (inter, d)])
-                    self.atmice_labels.append('MCEq-{}-{}'.format(inter, self.density_names[k]))
-                    
-        self.setup_model_names()
-                
-        return
-    
-    def set_models(self, atm = None, atm_labels = None, ice = None, ice_labels = None, atmice = None, atmice_labels = None, prod = None, prod_labels = None, prodfull = None, prodfull_labels = None, flow = None, flow_labels = None, flowfull = None, flowfull_labels = None):
-        if atm is None:
-            if hasattr(self, 'atm'):
-                atm = self.atm
-            else:
-                atm = [(self.judge_nash, ()), (self.MCEq_atm, ()), (self.daemonflux_atm, ())]
-        if atm_labels is None:
-            if hasattr(self, 'atm_labels'):
-                atm_labels = self.atm_labels
-            else:
-                atm_labels = ['JN-fit', 'MCEq-atm', 'daemonflux']
-                
-        if ice is None:
-            if hasattr(self, 'ice'):
-                ice = self.ice
-            else:
-                ice = [(self.Heisinger_ice, ()), (self.MCEq_ice, ())]
-        if ice_labels is None:
-            if hasattr(self, 'ice_labels'):
-                ice_labels = self.ice_labels
-            else:
-                ice_labels = ['_H-ice-norm', '_MCEq-ice']
-                
-        if atmice is None:
-            if hasattr(self, 'atmice'):
-                atmice = self.atmice
-            else:
-                atmice = [(self.MCEq_atmice, ())]
-        if atmice_labels is None:
-            if hasattr(self, 'atmice_labels'):
-                atmice_labels = self.atmice_labels
-            else:
-                atmice_labels = ['MCEq']
-                
-        if prod is None:
-            if hasattr(self, 'prod'):
-                prod = self.prod
-            else:
-                prod = [(self.Dyonisius_prod, ())]
-        if prod_labels is None:
-            if hasattr(self, 'prod_labels'):
-                prod_labels = self.prod_labels
-            else:
-                prod_labels = ['']
-                
-        if prodfull is None:
-            if hasattr(self, 'prodfull'):
-                prodfull = self.prodfull
-            else:
-                prodfull = [(self.Heisinger_full, ())]
-        if prodfull_labels is None:
-            if hasattr(self, 'prodfull_labels'):
-                prodfull_labels = self.prodfull_labels
-            else:
-                prodfull_labels = ['Heisinger']
-                
-        if flow is None:
-            if hasattr(self, 'flow'):
-                flow = self.flow
-            else:
-                flow = [(self.Basic_flow, ())]
-        if flow_labels is None:
-            if hasattr(self, 'flow_labels'):
-                flow_labels = self.flow_labels
-            else:
-                flow_labels = ['']
-                
-        if flowfull is None:
-            if hasattr(self, 'flowfull'):
-                flowfull = self.flowfull
-            else:
-                flowfull = [(self.load_profile, ())]
-        if flowfull_labels is None:
-            if hasattr(self, 'flowfull_labels'):
-                flowfull_labels = self.flowfull_labels
-            else:
-                flowfull_labels = ['Balco-Matlab']
-                
-        """
-        
-        
-        Parameters
-        ---------------
-        
-        """
-        
-        
-        self.atm = atm
-        self.atm_labels = atm_labels
-
-        self.ice = ice
-        self.ice_labels = ice_labels
-
-        self.atmice = atmice
-        self.atmice_labels = atmice_labels
-
-        self.prod = prod
-        self.prod_labels = prod_labels
-
-        self.prodfull = prodfull
-        self.prodfull_labels = prodfull_labels
-
-        self.flow = flow
-        self.flow_labels = flow_labels
-
-        self.flowfull = flowfull
-        self.flowfull_labels = flowfull_labels
-        
-        self.setup_model_names()
+        if update_names:
+            self.build_model_names()
         
         return
     
+    def add_models(self, **kwargs):
+        
+        self.set_models(clear=False, **kwargs)
+        
+        return
+        
     def clear_models(self):
-        # 
         
-        self.atm = []
-        self.atm_labels = []
-
-        self.ice = []
-        self.ice_labels = []
-
-        self.atmice = []
-        self.atmice_labels = []
-
-        self.prod = []
-        self.prod_labels = []
-
-        self.prodfull = []
-        self.prodfull_labels = []
-
-        self.flow = []
-        self.flow_labels = []
-
-        self.flowfull = []
-        self.flowfull_labels = []
+        self.set_models()
         
-        self.setup_model_names()
+    def build_model_names(self):
+        for s in self.stages:
+            self.model_names[s] = sum([sum([['{}{}'.format(i,n) for i in self.model_names.get(m.input,[''])] for n in m.names], []) for m in self.models[s]], [])
+        
+    def set_data(self, clear=True, **kwargs):
+        
+        for s in self.stages:
+            new_data = [DataSet(*d) for d in kwargs.get(s, [])]
+            if clear:
+                self.data[s] = new_data
+            else:
+                self.data[s] += new_data
+        
+    def add_data(self, **kwargs):
+        
+        self.set_data(clear=False, **kwargs)
     
-    def setup_model_names(self):
-        # 
+    def clear_data(self):
         
-        self.model_names = []
+        self.set_data()
 
-        for l in self.flow_labels:
-            for k in self.prod_labels:
-                for j in self.ice_labels:
-                    for i in self.atm_labels:
-                        self.model_names.append('{}{}{}{}'.format(i,j,k,l))
-                for i in self.atmice_labels:
-                    self.model_names.append('{}{}{}'.format(i,k,l))
-            for i in self.prodfull_labels:
-                self.model_names.append('{}{}'.format(i,l))
-        for i in self.flowfull_labels:
-            self.model_names.append(i)
+    def set_primary(self, Phi0, clear=True, run=False):
+
+        self.set_models(clear=clear, **{self.stages[0]: Phi0})
+        
+        if run:
+            self.calculate(start=0, end=0)
+        
+        return
+
+    def load_primary(self, p_models=None, clear=True, run=False): # primary CR intensities
+        
+        if p_models is None:
+            p_models = self.p_models
             
+        Phi0 = F.load_primary(self, p_models)
+        
+        self.set_models(clear=clear, **{self.stages[0]: Phi0})
+
+        if run:
+            self.calculate(start=0, end=0)
+        return
+
+    def set_primary_identity(self, run=False):
+
+        # sets up primary flux matrix to test each energy of p+ and n0 individually
+
+        Phi0 = F.set_primary_identity(self)
+        
+        self.set_models(**{self.stages[0]: Phi0})
+
+        if run:
+            self.calculate(start=0, end=0)
         return
     
-    def judge_nash(self, Phi0, K_mu = 1.268):
+    def clear_Phi(self):
         
-        """
-        
-        
-        Parameters
-        ----------------
-        Phi0 - 
-            
-        K_mu - 
-            
-        """
-        
+        self.Phi[self.stages[0]] = np.zeros((0,2,len(self.E)))
         #Phi0
-        #axis0 - Primary Model (Energy spectrum & Time dependence)
-        #axis1 - Particle Species (proton, neutron)
-        #axis2 - Primary Energy
-        
-        E0 = np.reshape(self.E, (1,1,-1))
-        cosTH = np.reshape(self.cosTH, (-1,1,1))
-        
-        H_pi = 114 #GeV
-        H_K = 851 #GeV
-        gamma_pi = 2.7
-        gamma_K = gamma_pi
-        A_pi = 0.28
-        A_K = 0.0455
-        y0 = 1000 # Atmosphere depth at sea level? (g/cm^2)
-        r_pi = 0.76 #muon to parent pion energy ratio
-        r_K = 0.523 #muon to parent kaon energy ratio
-        q = 2.2e-3 #mean energy loss of the muon in the atmosphere (GeV cm^2/g)
-        tau_mu = 2.2e-6 #mean muon lifetime (s)
-        tau_pi = 2.61e-8 #mean pion lifetime (s)
-        tau_K = 1.24e-8 #mean kaon lifetime (s)
-        g = 981.3 #acceleration due to gravity (cm/s^2)
-        R = 8.314e7 #gas constant (g cm^2/s^2 /K /mol)
-        m_mu = 105.659e-3 #muon rest mass (GeV/c^2)
-        m_pi = 139.580e-3 #pion rest mass (GeV/c^2)
-        m_K = 493.800e-3 #kaon rest mass (GeV/c^2)
-        c = 3e10 #speed of light (cm/s)
-        M = 28.966 #effective molecular weight of air (g/mol)
-
-        #effective mean temperature of the atmosphere as experienced at zenith angle theta
-        T_e = 220 #220 #from Chatzidakis 2015
-
-        H_mu = R*m_mu*T_e / c / M / g / tau_mu
-
-        E_pi = (E0 + q*y0*(1/cosTH - 0.0874))/r_pi
-
-        #H_pi = R*m_pi*c*T_e / M/g/tau_pi
-
-        W_pi = (0.0874 * cosTH * (1- q * (y0/cosTH - 90)/r_pi/E_pi))**(H_mu/cosTH/(r_pi*E_pi+90*q))
-
-        E_K = (E0 + q*y0*(1/cosTH - 0.0874))/r_K
-
-        #H_K = R*m_K*c*T_e / M / g /tau_K
-
-        W_K = (0.0874 * cosTH * (1- q * (y0/cosTH - 0.0874)/r_K/E_K))**(H_mu/cosTH/(r_K*E_K+90*q))
-
-        Phi_J = A_pi*W_pi*E_pi**(-gamma_pi)*H_pi / (E_pi*cosTH + H_pi) + A_K*W_K*E_K**(-gamma_K)*H_K / (E_K*cosTH + H_K)
-        
-        Phi_mu = Phi_J * np.reshape([K_mu/(K_mu+1), 1/(K_mu+1)], (1,-1,1))
-        
-        Phi_mu = np.expand_dims(Phi_mu, 0)
-        rescale = np.ones((np.shape(Phi0)[0], 1,1,1))
-        Phi_atm = Phi_mu * rescale
-        
-        print(np.shape(Phi_atm))
-
-        return np.nan_to_num(Phi_atm)
-
-    def bugaev_reyna(self, Phi0, K_mu = 1.268):
-        
-        """
-        
-        
-        Parameters
-        ---------------
-        Phi0 - 
-            
-        K_mu - 
-            
-        """
-        
-        #Phi0
-        #axis0 - Primary Model (Energy spectrum & Time dependence)
-        #axis1 - Particle Species (proton, neutron)
-        #axis2 - Primary Energy
-        
-        E0 = np.reshape(self.E, (1,1,-1))
-        cosTH = np.reshape(self.cosTH, (-1,1,1))
-        
-        A_B = 0.00253
-        a0 = 0.2455
-        a1 = 1.288
-        a2 = -0.2555
-        a3 = 0.0209
-
-        y = np.log10(E0*cosTH)
-
-        Phi_R = cosTH**3 * A_B * (E0*cosTH)**(-(a3*y**3 + a2*y**2 + a1*y + a0))
-        
-        Phi_mu = Phi_R * np.reshape([K_mu/(K_mu+1), 1/(K_mu+1)], (1,-1,1))
-        
-        Phi_mu = np.expand_dims(Phi_mu, 0)
-        rescale = np.ones((np.shape(Phi0)[0], 1,1,1))
-        Phi_atm = Phi_mu * rescale
-        
-        print(np.shape(Phi_atm))
-
-        return Phi_atm
-    
-    def SDC(self, Phi0, K_mu = 1.268):
-        
-        """
-        
-        
-        Parameters
-        ----------------
-        Phi0 - 
-            
-        K_mu - 
-            
-        """
-        
-        # Smith & Duller / Chatzidakis
-        
-        #Phi0
-        #axis0 - Primary Model (Energy spectrum & Time dependence)
-        #axis1 - Particle Species (proton, neutron)
-        #axis2 - Primary Energy
-        
-        E0 = np.reshape(self.E, (1,1,-1))
-        cosTH = np.reshape(self.cosTH, (-1,1,1))
-
-        A = 0.002382 # fitting parameter
-        r = 0.76 # Ratio of muon energy to pion energy
-        a = 2.500e-3 # Muon rate of energy loss in air (GeV / (g/cm^2))
-        y0 = 1000 # Atmosphere depth at sea level (g/cm^2)
-        gamma = 8/3 # fitting parameter
-        b_mu = 0.800 # Correction factor related to atmospheric temperature
-        m_mu = 105.659e-3 # Rest mass of muon (GeV/c^2)
-        tau_mu0 = 2.2e-6 # Mean lifetime of muon at rest (s)
-        rho0 = 0.00123 # Density of atmosphere at sea level (g/cm^3)
-        c = 3e10 # speed of light (cm/s)
-        lambda_pi = 120 # Absorption mean free path of pions (g/cm^2)
-        b = 0.771 # coefficient to modify the isothermal atmosphere approximation
-        tau0 = 2.61e-8 # Mean lifetime of pion at rest (s)
-        m_pi = 139.580e-3 # Rest mass of pion (GeV/c^2)
-        j_pi = 148.16 # m_pi * y0 * c / (tau0 * rho0) GeV
-
-        # energy of pion that produced muon
-        E_pi = (E0 + a*y0*(1/cosTH - 0.100))/r
-
-        B_mu = b_mu * m_mu * y0 / (c * tau_mu0 * rho0)
-
-        # Probability for muons to reach sea level
-        P_mu = (0.100 * cosTH * (1-a*(y0/cosTH - 100)/(r * E_pi)))**(B_mu / ((r*E_pi + 100*a)*cosTH))
-
-        Phi_S = A * E_pi**(-gamma) * P_mu * lambda_pi * b * j_pi/(E_pi* cosTH + b * j_pi)
-        
-        Phi_mu = Phi_S * np.reshape([K_mu/(K_mu+1), 1/(K_mu+1)], (1,-1,1))
-        
-        Phi_mu = np.expand_dims(Phi_mu, 0)
-        rescale = np.ones((np.shape(Phi0)[0], 1,1,1))
-        Phi_atm = Phi_mu * rescale
-        
-        print(np.shape(Phi_atm))
-
-        return Phi_atm
-    
-    def att_L(self, h=None):
-        if h is None:
-            h = self.h
-        
-        """
-        
-        
-        Parameters
-        --------------
-        h - 
-            
-        """
-        
-        # effective atmospheric attenuation length for muons at mass depth h
-        
-        # define range/momentum relation for atmospheric attenuation length used in Balco calculation
-        
-        # table for muons in standard rock in Groom and others 2001
-        # g/cm^2
-        h_range = np.array([8.516e-1, 1.542e0, 2.866e0, 5.698e0, 9.145e0, 2.676e1, 3.696e1, 5.879e1, 9.332e1, 1.524e2,
-                            2.115e2, 4.418e2, 5.534e2, 7.712e2, 1.088e3, 1.599e3, 2.095e3, 3.998e3, 4.920e3, 6.724e3,
-                            9.360e3, 1.362e4, 1.776e4, 3.343e4, 4.084e4, 5.495e4, 7.459e4, 1.040e5, 1.302e5, 2.129e5])
-
-        # MeV/c
-        momentum = np.array([4.704e1, 5.616e1, 6.802e1, 8.509e1, 1.003e2, 1.527e2, 1.764e2, 2.218e2, 2.868e2, 3.917e2,
-                             4.945e2, 8.995e2, 1.101e3, 1.502e3, 2.103e3, 3.104e3, 4.104e3, 8.105e3, 1.011e4, 1.411e4,
-                             2.011e4, 3.011e4, 4.011e4, 8.011e4, 1.001e5, 1.401e5, 2.001e5, 3.001e5, 4.001e5, 8.001e5])
-
-        P_MeVc = np.exp(np.interp(np.log(np.clip(h,1e-5,None)*100), np.log(h_range), np.log(momentum)))
-
-        return 263 + 150 * P_MeVc/1000
-    
-    def phi_vert_slhl(self, h=None):
-        if h is None:
-            h = self.h
-        """Empirical fit to vertical muon flux at sea level, presented in
-
-        B Heisinger et al. “Production of selected cosmogenic radionuclides by muons: 1. Fast muons”.
-        In: Earth and Planetary Science Letters 200.3 (2002), pp. 345–355. issn: 0012-821X.
-        doi: https://doi.org/10.1016/S0012-821X(02)00640-4.
-
-        where it was modified from the parameterization in
-
-        A.I. Barbouti, B.C. Rastin, A study of the absolute intensity of muons at sea level and under
-        various thicknesses of absorber, J. Phys. G 9 (1983) 1577-1595.
-
-        Parameters
-        -----------
-        h : float or array of floats
-            mass depth below surface (hg/cm^2)
-
-        Returns
-        --------
-        Phi_v : float or array of floats
-            Vertical muon flux (cm^-2 s^-1 sr^-1)
-        """
-        #parameters
-        p = [258.5,  #p0
-            -5.5e-4, #p1
-            210,     #p2
-            10,      #p3
-            1.66,    #p4
-            75]      #p5
-
-        a = np.exp(p[1] * h)
-        b = h + p[2]
-        c = (h+p[3])**p[4] + p[5]
-
-        Phi_v = p[0] * a / b / c  # cm^-2 s^-1 sr^-1
-
-        return Phi_v
-    
-    def R_vert_slhl(self, h=None):
-        if h is None:
-            h = self.h
-        """Analytic derivative of above vertical muon flux function with respect to mass depth,
-        derived in
-
-        B Heisinger et al. “Production of selected cosmogenic radionuclides by muons: 1. Fast muons”.
-        In: Earth and Planetary Science Letters 200.3 (2002), pp. 345–355. issn: 0012-821X.
-        doi: https://doi.org/10.1016/S0012-821X(02)00640-4.
-
-        Parameters
-        -----------
-        h : float or array of floats
-            mass depth below surface (hg/cm^2)
-
-        Returns
-        --------
-        R_v : float or array of floats
-            Vertical muon stopping rate (hg^-1 s^-1 sr^-1)
-        """
-        #parameters
-        p = [258.5,  #p0
-            -5.5e-4, #p1
-            210,     #p2
-            10,      #p3
-            1.66,    #p4
-            75]      #p5
-
-        a = np.exp(p[1] * h)
-        b = h + p[2]
-        c = (h+p[3])**p[4] + p[5]
-
-        dadh = p[1] * a
-        dbdh = 1.
-        dcdh = p[4] * (h+p[3])**(p[4]-1)
-
-        R_v = -p[0] * (b*c*dadh - a*c*dbdh - a*b*dcdh)/ b**2 / c**2  # hg^-1 s^-1 sr^-1
-
-        return R_v
-    
-    def phi_vert_site(self, h=None, dh=None, H=None, h_end=2e3):
-        if h is None:
-            h = self.h
-        if dh is None:
-            dh = self.dh
-        if H is None:
-            H = self.H
-            
-        """
-        
-        
-        Parameters
-        -----------------
-        h - 
-            
-        dh - 
-            
-        H - 
-            
-        h_end - 
-            
-        
-        Returns
-        ----------------
-        Phi_site - 
-            
-        R_site - 
-            
-        """
-    
-        Phi_v= self.phi_vert_slhl(h)
-
-        R_v = self.R_vert_slhl(h)
-
-        R_site = R_v * np.exp(H/self.att_L(h))
-
-        Phi_end = self.phi_vert_slhl(h_end)
-
-        dh_ext = 1
-        h_ext = np.arange(h[-1]+dh_ext, h_end+dh_ext, dh_ext)
-
-        h_int = np.append(h, h_ext)
-        dh_int = np.append(dh, dh_ext + 0*h_ext)
-
-        R_int = self.R_vert_slhl(h_int) * np.exp(H/self.att_L(h_int))
-
-        Phi_site = np.flip(np.cumsum(np.flip(R_int * dh_int))) + (1-np.exp(H/self.att_L(h_end)))*Phi_end
-
-        Phi_site = Phi_site[:len(h)]
-
-        return Phi_site, R_site
-    
-    def cos_pow(self, h, H=None):
-        if H is None:
-            H = self.H
-            
-        """
-        
-        
-        Parameters
-        -------------------
-        h - 
-            
-        H - 
-            
-        
-        Returns
-        --------------------
-        n - 
-            
-        dndh - 
-            
-        """
-            
-        #parameters
-        p = [3.21,     #p0
-             0.297,    #p1
-             42,       #p2
-             1.21e-3]  #p3
-
-        #H = (1013.25 - pressure/100) * 1.019716
-        #h_mod = h + H (atmospheric depth diff. from sea level)
-
-        # shouldn't H be subtracted here?
-
-        n = p[0] - p[1]*np.log(h + H/100 + p[2]) + p[3] * (h + H/100)
-
-        dndh = -p[1]/(h + H/100 + p[2]) + p[3]
-
-        return n, dndh
-    
-    def f_mu_neg(self, h = None):
-        K_mu = 1.268 # +/- 0.008 + 0.002 * E[GeV]
-
-        return 1/(K_mu+1)
-    
-    def phi_all(self, h=None, dh=None, H=None, cos_pow_func=None, f_func=None):
-        if h is None:
-            h = self.h
-        if dh is None:
-            dh = self.dh
-        if H is None:
-            H = self.H
-        if cos_pow_func is None:
-            cos_pow_func = self.cos_pow
-        if f_func is None:
-            f_func = self.f_mu_neg
-            
-        """
-        
-        
-        Parameters
-        ------------------
-        h - 
-            
-        dh - 
-            
-        H - 
-            
-        cos_pow_func - 
-            
-        f_func - 
-            
-        
-        Returns
-        ---------------------
-        Phi - 
-            
-        R - 
-            
-        """
-    
-        n, dndh = cos_pow_func(h, H)
-
-        Phi_v, R_v = self.phi_vert_site(h, dh, H)
-
-        Phi = 2*np.pi/(n+1) * Phi_v
-
-        R = f_func(h) * (2*np.pi * R_v + Phi*dndh) / (n+1)
-
-        return Phi, R # cm^-2 s^-1
-    
-    def Heisinger(self, h=None):
-        if h is None:
-            h = self.h
-            
-        """
-        
-        
-        Parameters
-        ----------------
-        h - 
-            
-        
-        Returns
-        ---------------
-        E_pred - 
-            
-        Beta_pred - 
-            
-        """
-            
-        #parameters
-        a = 7.6
-        b = 321.7
-        c = 8.059e-4
-        d = 50.7
-        e = 5.05e-5
-
-        f = 0.846
-        g = 0.015
-        i = 0.003139
-
-        # Heisinger's fit for average Energy
-        E_pred = a + b * (1-np.exp(-c*h)) + d*(1-np.exp(-e*h))
-
-        # Heisinger's Beta correction term
-        Beta_pred = f - g*np.log(h+1)+i*np.log(h+1)**2
-
-        return E_pred, Beta_pred
-    
-    def E_surf(self, E_d, X, a=None, b=None):
-        if a is None:
-            a = self.a
-        if b is None:
-            b = self.b
-            
-        """
-        
-        
-        Parameters
-        -----------------
-        E_d - 
-            
-        X - 
-            
-        a - 
-            
-        b - 
-            
-        
-        Returns
-        ------------------
-        E_surf - 
-            
-        """
-    
-        return ((E_d + a/b)*np.exp(X*b)-a/b).clip(min=self.E_bins[0])
-    
-    def Heisinger_ice(self, Phi_atm, a=None, b=None, norm=True, H=None):
-        if a is None:
-            a = self.a
-        if b is None:
-            b = self.b
-        if H is None:
-            H = self.H
-            
-        """
-        
-        
-        Parameters
-        ------------------
-        Phi_atm - 
-            
-        a - 
-            
-        b - 
-            
-        norm - 
-            
-        H - 
-            
-        
-        Returns
-        ----------------------
-        Phi_proj - 
-            
-        """
-            
-        # project under ice w/ Gaisser-Stanev
-        # normalize proportional to Heisinger depth fit times total surface flux
-
-        #Phi_atm
-        #axis0 - Atmospheric Model
-        #axis1 - Primary Model
-        #axis2 - Zenith Angle
-        #axis3 - Muon Charge (positive, negative)
-        #axis4 - Muon Energy
-
-        X = np.reshape(self.h_bins,(1,1,-1))/np.reshape(self.cosTH,(1,-1,1))
-
-        E_bounds = self.E_surf(np.reshape(self.E_bins,(-1,1,1)), X, a, b) # Energy bins at depth projected back to their surface energies
-        
-        Phi_proj = np.zeros((*np.shape(Phi_atm), len(self.h_bins)))
-
-        # Now, this is going to look incomprehensible, but...
-        for i in tqdm(range(len(self.cosTH))):
-            for j in range(len(self.h_bins)):
-                E_proj = E_bounds[:,i,j]
-                deep = True # Starting from a Phi_proj energy bin edge?  False means Phi_atm
-                #print(i,j,E_proj[0])
-                k=np.arange(len(self.E_bins))[self.E_bins<=E_proj[0]][-1] # current Phi_atm energy bin
-                l=0 # current Phi_proj energy bin
-                while k < len(self.E_bins)-1 and l < len(E_proj)-1: # step through energy bin edge, one by one, putting muons from Phi_atm into the Phi_proj bin corresponding to their projected underground energy
-                    if self.E_bins[k+1]<=E_proj[l+1]: # if the next bin edge is from Phi_atm
-                        Phi_proj[:, :, i, :, l, j] += Phi_atm[:,:,i,:,k] * (self.E_bins[k+1]-(E_proj[l] if deep else self.E_bins[k]))
-                        k += 1 # Start the next step from Phi_atm's bin edge
-                        deep = False
-                    else: # if the next bin boundary is from Phi_proj
-                        Phi_proj[:, :, i, :, l, j] += Phi_atm[:,:,i,:,k] * (E_proj[l+1]-(E_proj[l] if deep else self.E_bins[k]))
-                        l += 1 # Start the next step from Phi_proj's bin edge
-                        deep = True
-                # Hate to use a While loop, but it should have to stop before 2*len(E_bins) steps
-
-        Phi_proj = np.sum(Phi_proj / np.reshape(self.dE,(1,1,1,1,-1,1)) * np.reshape(self.dcosTH, (1,1,-1,1,1,1)), axis=2) * 2 * np.pi
-        #axis0 - Atmospheric Model
-        #axis1 - Primary Model
-        #axis2 - Muon Charge (positive, negative)
-        #axis3 - Muon Energy
-        #axis4 - depth (top -> bottom)
-
-        # Normalize the result to Heisinger's total flux fit (elevation adjusted by Balco)
-        if norm:
-            return Phi_proj / np.sum(Phi_proj * np.reshape(self.dE,(1,1,1,-1,1)), axis=(2,3), keepdims=True) * np.reshape(self.phi_all(self.h_bins,np.append(self.dh,self.dh[-1]),self.H)[0], (1,1,1,1,-1))
-        return Phi_proj
-        
-    def Heisinger_full(self, Phi0, H=None):
-        if H is None:
-            H = self.H
-            
-        """
-        
-        
-        Parameters
-        ---------------------
-        Phi0 - 
-            
-        H - 
-            
-        f_factors - 
-            
-        
-        Returns
-        ---------------
-        P_14C - 
-            
-        """
-            
-        # Standard Heisinger calculation
-        # normalize proportional to total primary flux
-        
-        #Phi0
-        #axis0 - Primary Model (Energy spectrum & Time dependence)
-        #axis1 - Particle Species (proton, neutron)
-        #axis2 - Primary Energy
-
-        # Currently not normalizing to Phi0
-        
-        E_pred, Beta_pred = self.Heisinger()
-
-        Phi, R = self.phi_all(self.h, self.dh, H) # Total Muon Flux, Negative Muon Stopping Rate
-
-        P_neg = R * self.f_tot
-
-        P_fast = self.sigma_0 * Phi * E_pred**self.alpha * Beta_pred * self.N
-
-        P_14C = np.reshape([P_fast, P_neg], (1,2,-1)) /100 * 60 * 60 * 24 * 365.25 # g^-1, a^-1
-
-        #rescale = np.ones((np.shape(Phi0)[0], 1))
-        
-        #P_14C
-        #axis1 - Primary Model
-        #axis2 - Production Mode (fast, neg)
-        #axis3 - depth (top -> bottom)
-
-        return P_14C * np.ones((np.shape(Phi0)[0],1,1))
-    
-    def get_mceq_path(self, mceq, cTH):
-        
-        """
-        
-        
-        Parameters
-        ---------------------
-        mceq - 
-            
-        cTH - 
-            
-        
-        Returns 
-        ----------------------
-        dX - 
-            
-        dz - 
-            
-        """
-        
-        mceq.set_theta_deg(180*np.arccos(cTH)/np.pi)
-        mceq._calculate_integration_path(None,'X')
-        nsteps, dX, rho_inv, grid_idcs = mceq.integration_path
-        return dX, dX*rho_inv
-    
-    # WHERE ARE YOUR PARENTS??
-    # Here we're trying to assemble a list of all particle species and energies which could ever lead
-    # to the production of a muon
-    # Any particles not falling under that category get cut; we don't need to track them
-
-    def get_parents(self, children, mceq=None):
-        if mceq is None:
-            mceq = self.mceq
-            
-        """
-        
-        
-        Parameters
-        ---------------
-        children - 
-        
-        mceq - 
-        
-        
-        Returns
-        ----------------
-        parents - 
-            
-        """
-            
-        #rows = products
-        #columns = sources
-        row0, col0, val0 = find(mceq.int_m)
-        row1, col1, val1 = find(mceq.dec_m)
-        row, col = np.append(row0[val0!=0],row1[val1!=0]), np.append(col0[val0!=0],col1[val1!=0])
-
-        # make sure the identity exists
-        row = np.append(row, np.arange(len(mceq._phi0)))
-        col = np.append(col, np.arange(len(mceq._phi0)))
-
-        parents = np.copy(children)
-
-        i=0
-        while len(parents) != len(np.unique(col[np.isin(row, parents)])) and i<100:
-            parents = np.unique(col[np.isin(row, parents)])
-            i+=1
-
-        if i>=100:
-            print('failed to converge')
-
-        return parents
-    
-    def i_to_pname(self, i, mceq=None):
-        if mceq is None:
-            mceq = self.mceq
-            
-        """
-        
-        
-        Parameters
-        ---------------
-        i - 
-        
-        mceq - 
-        
-        
-        Returns
-        -----------------
-        pnames - 
-            
-        """
-            
-        return np.array(list(mceq.pman.pname2pref.keys()))[np.unique(i//len(mceq._energy_grid.c))]
-    
-    def mceq_integrate(self, phi0, dX, dz, int_m, dec_m, grid=False):
-        
-        """
-        
-        
-        Parameters
-        ----------------
-        phi0 - numpy array
-            
-        dX - numpy array
-            
-        dz - numpy array
-            
-        int_m - numpy array
-            
-        dec_m - numpy array
-            
-        grid - bool
-            
-        
-        Returns
-        ----------------
-        grid_sol - numpy array
-            
-        
-        or
-        
-        phc - numpy array
-            
-        """
-        
-        phc = np.copy(phi0)
-
-        if grid:
-            grid_sol = np.zeros((len(dX)+1, *np.shape(phi0))) # grid_sol begins with the right shape, to avoid restructuring
-            grid_sol[0] = np.copy(phi0)
-
-        for step in tqdm(range(len(dX))): # added option for tqdm progress bar
-            phc += int_m.dot(phc)*dX[step] + dec_m.dot(phc)*dz[step]
-            phc[phc<1e-250] = 0. # exreme low values set to 0, improving efficiency for large slant depths
-
-            if grid:
-                grid_sol[step+1] = np.copy(phc) # grid_sol no longer appends
-
-        if grid:
-            return grid_sol
-
-        return phc
-    
-    def solve_mceq(self, mceq, int_grid=None, grid_var='X', use_tqdm=False):
-        
-        """
-        
-        
-        Parameters
-        ---------------
-        mceq - MCEqRun object
-            
-        int_grid - 
-            
-        grid_var - string
-            
-        use_tqdm - bool
-            
-        """
-        
-        mceq._calculate_integration_path(int_grid=int_grid, grid_var=grid_var)
-
-        nsteps, dX, rho_inv, grid_idcs = mceq.integration_path
-        int_m = mceq.int_m
-        dec_m = mceq.dec_m
-
-        dXaccum = 0.
-        grid_sol = np.zeros((len(grid_idcs), *np.shape(mceq._phi0))) # grid_sol begins with the right shape, to avoid restructuring
-        grid_step = 0
-
-        phc = np.copy(mceq._phi0)
-
-        for step in (tqdm(range(nsteps)) if use_tqdm else range(nsteps)): # added option for tqdm progress bar
-            phc += (int_m.dot(phc) + dec_m.dot(rho_inv[step] * phc)) * dX[step]
-            phc[phc<1e-250] = 0. # exreme low values set to 0, improving efficiency for large slant depths
-
-            if (grid_idcs and grid_step < len(grid_idcs)
-                    and grid_idcs[grid_step] == step):
-                grid_sol[grid_step] = np.copy(phc) # grid_sol no longer appends
-                grid_step += 1
-
-        mceq._solution, mceq.grid_sol = phc, grid_sol
-
-        return
-    
-    def MCEq_atm(self, Phi0, interaction_model="SIBYLL-2.3c", density_model=('CORSIKA', ('USStd', None)), elev=None, solver='default'):
-        if elev is None:
-            elev = self.elev
-            
-        """
-        
-        
-        Parameters
-        -----------------
-        Phi0 - numpy array
-            
-        interaction_model - string
-            
-        density_model - tuple, shape ('MODEL_NAME', parameters)
-            
-        elev - int or float
-            
-        solver - string
-            
-        
-        Returns
-        ---------------------
-        phi_mu - 
-            
-        """
-            
-        # Use MCEq to propagate primary flux to atmospheric muons
-        #Phi0
-        #axis0 - Primary Model (Energy spectrum & Time dependence)
-        #axis1 - Particle Species (proton, neutron)
-        #axis2 - Primary Energy
-
-        import mceq_config as config
-        config.debug_level = 0
-        config.h_obs = elev # elevation in (m) of Dome-C
-        config.enable_default_tracking = False
-        config.e_min = self.E_bins[0]*10.**0.1
-        config.e_max = self.E_bins[-1]
-        config.max_density = 0.001225
-        config.dedx_material = 'air'
-
-        #mceq_air.set_interaction_model(interaction_model)
-        #config.h_obs = elev
-        #mceq_air.set_density_model(density_model)
-        #int_m_air, dec_m_air = mceq_air.int_m[p_cut][:,p_cut], mceq_air.dec_m[p_cut][:,p_cut]
-
-        mceq = MCEqRun(
-            interaction_model=interaction_model,
-            theta_deg = 0,
-            density_model = density_model,
-            #medium=medium,
-            primary_model = (pm.GaisserHonda, None),
-        )
-
-        pname = mceq.pman.pname2pref
-        phi0 = np.zeros((np.shape(Phi0)[0], len(mceq._phi0)))
-        phi0[:,pname['p+'].lidx:pname['p+'].uidx] = Phi0[:,0]
-        phi0[:,pname['n0'].lidx:pname['n0'].uidx] = Phi0[:,1]
-        #phi0 = phi0[:,p_cut]
-        phi0 = np.moveaxis(phi0, 1, 0)
-        #phi0 = phi0.reshape((len(p_cut),-1))
-        phi0 = phi0.reshape((len(mceq._phi0),-1))
-
-        #phi_mu = np.zeros((np.shape(Phi0)[0],len(cosTH),2,len(mu_pos_cut),np.shape(Phi0)[-1]))
-        phi_mu = np.zeros((np.shape(Phi0)[0],len(self.cosTH),2,len(self.E)))
-
-        for i in tqdm(range(len(self.cosTH))):
-            #dX_air, dz_air = get_mceq_path(mceq_air, cosTH[i])
-            #phi_surf = mceq_integrate(phi0, dX_air, dz_air, int_m_air, dec_m_air)
-            #phi_surf = np.moveaxis(phi_surf.reshape(len(p_cut),np.shape(Phi0)[0],np.shape(Phi0)[-1]), 0, 1)
-
-            mceq.set_theta_deg(180*np.arccos(self.cosTH[i])/np.pi)
-            mceq._phi0 = phi0
-            
-            if solver == 'default':
-                self.solve_mceq(mceq)
-            else:
-                # 'numpy', 'cuda', or 'mkl'
-                config.kernel_config = solver
-                mceq.solve()
-            
-            phi_surf = np.moveaxis(mceq._solution.reshape(len(phi0),np.shape(Phi0)[0]), 0, 1)
-
-            phi_mu[:,i,0] += phi_surf[:,pname['mu+'].lidx:pname['mu+'].uidx]
-            phi_mu[:,i,0] += phi_surf[:,pname['mu+_l'].lidx:pname['mu+_l'].uidx]
-            phi_mu[:,i,0] += phi_surf[:,pname['mu+_r'].lidx:pname['mu+_r'].uidx]
-
-            phi_mu[:,i,1] += phi_surf[:,pname['mu-'].lidx:pname['mu-'].uidx]
-            phi_mu[:,i,1] += phi_surf[:,pname['mu-_l'].lidx:pname['mu-_l'].uidx]
-            phi_mu[:,i,1] += phi_surf[:,pname['mu-_r'].lidx:pname['mu-_r'].uidx]
-        
-        print(np.shape(phi_mu))
-
-        return phi_mu
-    
-    def MCEq_ice(self, Phi_atm, interaction_model="SIBYLL-2.3c", solver='default'):
-        
-        """
-        
-        
-        Parameters
-        ------------------
-        Phi_atm - 
-        
-        interaction_model - 
-        
-        solver - 
-        
-        
-        Returns
-        -----------------------
-        phi_mu - 
-            
-        """
-        
-        # Use MCEq to propagate atmospheric muons underground
-        #Phi_atm
-        #axis0 - Atmospheric Model
-        #axis1 - Primary Model
-        #axis2 - Zenith Angle
-        #axis3 - Muon Charge (positive, negative)
-        #axis4 - Muon Energy
-
-        import mceq_config as config
-        config.debug_level = 0
-        config.enable_default_tracking = False
-        config.e_min = self.E_bins[0]*10.**0.1
-        config.e_max = self.E_bins[-1]
-        config.max_density = self.rho_ice
-        config.dedx_material='ice'
-        medium = 'ice'
-
-        target = GeneralizedTarget(len_target=self.z_bins[-1]*100, env_density = self.rho_ice, env_name = 'ice')
-
-        mceq = MCEqRun(
-            interaction_model=interaction_model,
-            theta_deg = 0,
-            density_model = target,
-            medium=medium,
-            primary_model = (pm.GaisserHonda, None),
-        )
-
-        #mceq_ice.set_interaction_model(interaction_model)
-        #int_m_ice, dec_m_ice = mceq_ice.int_m[p_cut][:,p_cut], mceq_ice.dec_m[p_cut][:,p_cut]
-
-        pname = mceq.pman.pname2pref
-        phi0 = np.zeros((*np.shape(Phi_atm)[:3], len(mceq._phi0)))
-        phi0[:,:,:,pname['mu+'].lidx:pname['mu+'].uidx] = Phi_atm[:,:,:,0]
-        phi0[:,:,:,pname['mu-'].lidx:pname['mu-'].uidx] = Phi_atm[:,:,:,1]
-        phiF = np.copy(phi0)
-        #phi0 = phi0[:,:,:,p_cut]
-        phi0 = np.moveaxis(phi0, (2,3), (0,1))
-        phi0 = phi0.reshape((len(self.cosTH),len(mceq._phi0),-1))
-
-        phi_mu = np.zeros((*np.shape(Phi_atm)[:2],2,np.shape(Phi_atm)[-1],len(self.h_bins)))
-
-        for i in tqdm(range(len(self.cosTH))):
-            #phi_deep = mceq_integrate(phi0[i], dh/cosTH[i]*100., dz/cosTH[i]*100., int_m_ice, dec_m_ice, grid=True)
-            #phi_deep = np.moveaxis(phi_deep.reshape(len(h_bins), len(p_cut), *np.shape(Phi_atm)[:2], np.shape(Phi_atm)[-1]), (0,1), (-2,2))
-
-            target = GeneralizedTarget(len_target=self.z_bins[-1]*100/self.cosTH[i], env_density = self.rho_ice, env_name = 'ice')
-            target.mat_list = [[self.z_bins[j]*100/self.cosTH[i], self.z_bins[j+1]*100/self.cosTH[i], self.rho[j], 'ice'] for j in range(len(self.z_bins)-1)]
-            target._update_variables()
-
-            mceq.set_density_model(target)
-            mceq._phi0 = phi0[i]
-            
-            if solver == 'default':
-                self.solve_mceq(mceq, int_grid=self.h_bins/self.cosTH[i]*100)
-            else:
-                # 'numpy', 'cuda', or 'mkl'
-                config.kernel_config = solver
-                mceq.solve(int_grid=h_bins/cosTH[i]*100)
-            
-            #mceq.grid_sol = np.expand_dims(mceq._phi0, axis=0) * np.ones((len(z_bins),1,1))
-            phi_deep = np.moveaxis(mceq.grid_sol.reshape(len(self.h_bins), len(phi0[i]), *np.shape(Phi_atm)[:2]), (0,1), (-1,2))
-
-            #phi_deep = np.expand_dims(phiF[:,:,i], axis=3) * np.ones((1,1,1,len(z_bins),1))
-
-            phi_mu[:,:,0] += phi_deep[:,:,pname['mu+'].lidx:pname['mu+'].uidx]*self.dcosTH[i]
-            phi_mu[:,:,0] += phi_deep[:,:,pname['mu+_l'].lidx:pname['mu+_l'].uidx]*self.dcosTH[i]
-            phi_mu[:,:,0] += phi_deep[:,:,pname['mu+_r'].lidx:pname['mu+_r'].uidx]*self.dcosTH[i]
-
-            phi_mu[:,:,1] += phi_deep[:,:,pname['mu-'].lidx:pname['mu-'].uidx]*self.dcosTH[i]
-            phi_mu[:,:,1] += phi_deep[:,:,pname['mu-_l'].lidx:pname['mu-_l'].uidx]*self.dcosTH[i]
-            phi_mu[:,:,1] += phi_deep[:,:,pname['mu-_r'].lidx:pname['mu-_r'].uidx]*self.dcosTH[i]
-            #phi_mu += np.expand_dims(Phi_atm[:,:,i], axis=4) * np.ones((1,1,1,1,len(z_bins),1)) * dcosTH[i]
-
-        return phi_mu * 2 * np.pi
-    
-    def MCEq_atmice(self, Phi0, interaction_model="SIBYLL-2.3c", density_model=('CORSIKA', ('USStd', None)), elev=None, solver='default'):
-        
-        """
-        
-        
-        Parameters
-        ------------------
-        Phi0 - 
-        
-        interaction_model - 
-        
-        density_model - 
-        
-        elev - 
-        
-        solver - 
-        
-        
-        Returns
-        ---------------------
-        phi_mu - 
-            
-        """
-        
-        # Use MCEq to propagate primary flux to atmospheric muons to underground muons
-        if elev is None:
-            elev = self.elev
-            
-        #Phi0
-        #axis0 - Primary Model (Energy spectrum & Time dependence)
-        #axis1 - Particle Species (proton, neutron)
-        #axis2 - Primary Energy
-
-        import mceq_config as config
-        config.debug_level = 0
-        config.h_obs = elev # elevation in (m) of Dome-C
-        config.enable_default_tracking = False
-        config.e_min = self.E_bins[0]*10.**0.1
-        config.e_max = self.E_bins[-1]
-        config.max_density = 0.001225
-        config.dedx_material = 'air'
-
-        mceq_air = MCEqRun(
-            interaction_model=interaction_model,
-            theta_deg = 0,
-            density_model = density_model,
-            #medium=medium,
-            primary_model = (pm.GaisserHonda, None),
-        )
-
-        import mceq_config as config
-        config.debug_level = 0
-        config.enable_default_tracking = False
-        config.e_min = self.E_bins[0]*10.**0.1
-        config.e_max = self.E_bins[-1]
-        config.max_density = self.rho_ice
-        config.dedx_material='ice'
-        medium = 'ice'
-
-        target = GeneralizedTarget(len_target=self.z_bins[-1]*100, env_density = self.rho_ice, env_name = 'ice')
-
-        mceq_ice = MCEqRun(
-            interaction_model=interaction_model,
-            theta_deg = 0,
-            density_model = target,
-            medium=medium,
-            primary_model = (pm.GaisserHonda, None),
-        )
-
-        #mceq_air.set_interaction_model(interaction_model)
-        #config.h_obs = elev
-        #mceq_air.set_density_model(density_model)
-        #int_m_air, dec_m_air = mceq_air.int_m[p_cut][:,p_cut], mceq_air.dec_m[p_cut][:,p_cut]
-
-        #mceq_ice.set_interaction_model(interaction_model)
-        #int_m_ice, dec_m_ice = mceq_ice.int_m[p_cut][:,p_cut], mceq_ice.dec_m[p_cut][:,p_cut]
-
-        pname = mceq_air.pman.pname2pref
-        phi0 = np.zeros((np.shape(Phi0)[0], len(mceq_air._phi0)))
-        phi0[:,pname['p+'].lidx:pname['p+'].uidx] = Phi0[:,0]
-        phi0[:,pname['n0'].lidx:pname['n0'].uidx] = Phi0[:,1]
-        #phi0 = phi0[:,p_cut]
-        phi0 = np.moveaxis(phi0, 1, 0)
-        #phi0 = phi0.reshape((len(p_cut),-1))
-        phi0 = phi0.reshape((len(mceq_air._phi0),-1))
-
-        phi_mu = np.zeros((np.shape(Phi0)[0],2,len(self.E),len(self.h_bins)))
-
-        for i in tqdm(range(len(self.cosTH))):
-            #dX_air, dz_air = get_mceq_path(mceq_air, cosTH[i])
-            #phi_surf = mceq_integrate(phi0, dX_air, dz_air, int_m_air, dec_m_air)
-            mceq_air.set_theta_deg(180*np.arccos(self.cosTH[i])/np.pi)
-            mceq_air._phi0 = phi0
-            
-            if solver == 'default':
-                self.solve_mceq(mceq_air)
-            else:
-                # 'numpy', 'cuda', or 'mkl'
-                config.kernel_config = solver
-                mceq_air.solve()
-
-            #phi_deep = mceq_integrate(phi_surf, dh/cosTH[i]*100., dz/cosTH[i]*100., int_m_ice, dec_m_ice, grid=True)target = GeneralizedTarget(len_target=z_bins[-1]*100, env_density = rho_ice, env_name = 'ice')
-            target = GeneralizedTarget(len_target=self.z_bins[-1]*100/self.cosTH[i], env_density = self.rho_ice, env_name = 'ice')
-            target.mat_list = [[self.z_bins[j]*100/self.cosTH[i], self.z_bins[j+1]*100/self.cosTH[i], self.rho[j], 'ice'] for j in range(len(self.z_bins)-1)]
-            target._update_variables()
-
-            mceq_ice.set_density_model(target)
-            mceq_ice._phi0 = mceq_air._solution
-            
-            if solver == 'default':
-                self.solve_mceq(mceq_ice, int_grid=self.h_bins/self.cosTH[i]*100)
-            else:
-                # 'numpy', 'cuda', or 'mkl'
-                config.kernel_config = solver
-                mceq_ice.solve(int_grid=h_bins/cosTH[i]*100)
-            
-            phi_deep = np.moveaxis(mceq_ice.grid_sol.reshape(len(self.h_bins), len(phi0), np.shape(Phi0)[0]), (0,1), (-1,1))
-
-            phi_mu[:,0] += phi_deep[:,pname['mu+'].lidx:pname['mu+'].uidx]*self.dcosTH[i]
-            phi_mu[:,0] += phi_deep[:,pname['mu+_l'].lidx:pname['mu+_l'].uidx]*self.dcosTH[i]
-            phi_mu[:,0] += phi_deep[:,pname['mu+_r'].lidx:pname['mu+_r'].uidx]*self.dcosTH[i]
-
-            phi_mu[:,1] += phi_deep[:,pname['mu-'].lidx:pname['mu-'].uidx]*self.dcosTH[i]
-            phi_mu[:,1] += phi_deep[:,pname['mu-_l'].lidx:pname['mu-_l'].uidx]*self.dcosTH[i]
-            phi_mu[:,1] += phi_deep[:,pname['mu-_r'].lidx:pname['mu-_r'].uidx]*self.dcosTH[i]
-
-        return phi_mu * 2 * np.pi
-    
-    def daemonflux_atm(self, Phi0):
-        
-        """
-        
-        
-        Parameters
-        --------------------
-        Phi0 - 
-        
-        
-        Returns
-        --------------------
-        Phi_atm - 
-            
-        """
-        
-        #Phi0
-        #axis0 - Primary Model (Energy spectrum & Time dependence)
-        #axis1 - Particle Species (proton, neutron)
-        #axis2 - Primary Energy
-    
-        df_cut = (self.E <= 1e9)
-        daemon_flux_pos = daemonflux.Flux(location='generic').flux(self.E[df_cut], np.arccos(self.cosTH)*180/np.pi, 'mu+')/np.reshape(self.E[df_cut]**3, (-1,1))
-        daemon_flux_neg = daemonflux.Flux(location='generic').flux(self.E[df_cut], np.arccos(self.cosTH)*180/np.pi, 'mu-')/np.reshape(self.E[df_cut]**3, (-1,1))
-
-        Phi_atm = np.zeros((np.shape(Phi0)[0], len(self.cosTH), 2, len(self.E)))
-        pname = self.mceq.pman.pname2pref
-        Phi_atm[:, :, :, df_cut] = np.reshape(daemon_flux_pos.T, (1,len(self.cosTH), 1, -1)) # positive muons
-        Phi_atm[:, :, :, df_cut] = np.reshape(daemon_flux_neg.T, (1,len(self.cosTH), 1, -1)) # negative muons
-
-        #Phi_atm
         #axis0 - Primary Model
+        #axis1 - Particle Species (proton, neutron)
+        #axis2 - Primary Energy (E)
+        
+        self.Phi[self.stages[1]] = np.zeros((0,len(self.cosTH),2,len(self.E)))
+        #Phi_atm
+        #axis0 - Atmospheric Model
         #axis1 - Zenith Angle
         #axis2 - Muon Charge (positive, negative)
-        #axis3 - Muon Energy
+        #axis3 - Muon Energy (E_mu)
         
-        print(np.shape(Phi_atm))
-
-        return Phi_atm
-    
-    def Dyonisius_prod(self, Phi_ice, sigma_E = None, E_sigma = None, alpha = None, N = None, f_tot = None):
-        if sigma_E is None:
-            sigma_E = self.sigma_E
-        if E_sigma is None:
-            E_sigma = self.E_sigma
-        if alpha is None:
-            alpha=self.alpha
-        if N is None:
-            N = self.N
-        if f_tot is None:
-            f_tot = self.f_tot
-            
-        """
-        
-        
-        Parameters
-        --------------------
-        Phi_ice - 
-            
-        sigma_E - 
-            
-        alpha - 
-            
-        N - 
-            
-        f_tot - 
-            
-        
-        Returns
-        --------------------
-        P_14C - 
-            
-        """
-            
-        # Calculate production rates
-
+        self.Phi[self.stages[2]] = np.zeros((0,len(self.cosTH),2,len(self.E),len(self.z_bins)))
         #Phi_ice
-        #axis0 - Atmospheric & Ice Models
-        #axis1 - Primary Model
-        #axis2 - Muon Charge (positive, negative)
-        #axis3 - Muon Energy
-        #axis4 - depth (top -> bottom)
+        #axis0 - Underice Model
+        #axis1 - Muon Charge (positive, negative)
+        #axis2 - Muon Energy (E_mu)
+        #axis3 - depth bin EDGES (top -> bottom)
+        
+        self.Phi[self.stages[3]] = np.zeros((0,2,len(self.z)))
+        #P_14C
+        #axis0 - Production Model
+        #axis1 - Production Mode (fast, neg)
+        #axis2 - depth (top -> bottom)
+        
+        self.Phi[self.stages[4]] = np.zeros((0,len(self.z)))
+        #CO
+        #axis0 - 14CO Model
+        #axis1 - depth (top -> bottom)
+        
+        return
 
-        # NOTE: depth starts measured on the bin EDGES and is returned on the bin CENTERS
-        # (This is because we need to take a derivative)
-
-        sigma_0 = sigma_E / E_sigma**alpha
-
-        P_neg = f_tot * -np.diff(np.sum(Phi_ice[:,:,1] * np.reshape(self.dE, (1,1,-1,1)), axis=2), axis=-1)/np.reshape(self.dh, (1,1,-1))
-
-        P_fast = sigma_0 * N * np.sum((Phi_ice[:,:,:,:,1:]+Phi_ice[:,:,:,:,:-1])/2 * np.reshape(self.E**alpha * self.dE, (1,1,1,-1,1)), axis=(2,3))
-
-        return np.moveaxis([P_fast, P_neg], 0, 2) /100 * 60 * 60 * 24 * 365.25 # g^-1, a^-1
-    
-    def diag_sum(self, A, off=None, axis1=-2, axis2=-1):
-        # sums along the upper diagonals of two axes in an array
-        # the new axis replaces axis1; axis2 is eliminated.
-        if off is None:
-            off = np.flip(range(np.shape(A)[axis2]))
-        return np.moveaxis(np.array([np.trace(A, offset=i, axis1=axis1, axis2=axis2) for i in off]), 0, axis1 if axis1>=0 else axis1+1)
-    
-    def Basic_flow(self, P_14C, f_factors = None, f_t = None, lambd=None):
-        if f_factors is None:
-            f_factors = self.f_factors
-        if f_t is None:
-            f_t = np.ones(len(self.t[self.i_start:]))
-        if lambd is None:
-            lambd=self.lambd
-            
-        """
-        
-        
-        Parameters
-        -----------------
-        P_14C - 
-        
-        f_factors - 
-        
-        f_t - 
-        
-        lambd - 
-        
-        
-        Returns
-        -------------------
-        CO - 
-            
-        """
-            
-        # Shift past 14CO down and decay
-        # (AKA multiply by survival fraction and sum along upper diagonal)
-
-        #P_14C - 14C Production Rate
-        #axis0 - Production, Atmospheric & Ice Models
-        #axis1 - Primary Model
-        #axis2 - Production Mode (fast, neg)
-        #axis3 - depth (top -> bottom)
-        
-        lambda_dt = np.reshape((1-lambd)**(self.t[self.i_start:][-1]-self.t[self.i_start:]) * self.dt[self.i_start:] * f_t, (1,1,1,-1))
-
-        return self.diag_sum(np.expand_dims(np.sum(P_14C[:,:,:,self.i_start:]*np.reshape(f_factors, (1,1,-1,1)), axis=2), axis=-1) * lambda_dt)
-    
-    def load_profile(self, Phi0, file='balco_14co_const_models.fits', i=68):
-        
-        """
-        
-        
-        Parameters
-        --------------------
-        Phi0 - 
-        
-        file - 
-        
-        i - 
-        
-        
-        Returns
-        -----------------------
-        CO - 
-            
-        """
-        
-        #Phi0
-        #axis0 - Primary Model (Energy spectrum & Time dependence)
-        #axis1 - Particle Species (proton, neutron)
-        #axis2 - Primary Energy
-        
-        hdus = fits.open(file)
-        return np.reshape(hdus['CO14'].data[i][1:], (1,-1)) * np.ones((len(Phi0),1))
-
-    def calculate(self, Phi0=None, atm=None, ice=None, atmice=None, prod=None, prodfull=None, flow=None, flowfull=None, output=False):
-        if Phi0 is None:
-            Phi0 = self.Phi0
-        if atm is None:
-            atm = self.atm
-        if ice is None:
-            ice = self.ice
-        if atmice is None:
-            atmice = self.atmice
-        if prod is None:
-            prod = self.prod
-        if prodfull is None:
-            prodfull = self.prodfull
-        if flow is None:
-            flow = self.flow
-        if flowfull is None:
-            flowfull = self.flowfull
+    def calculate(self, start=0, end=-1, models=None, output=False, clear=True, **kwargs):
             
         """
         
         
         Parameters
         ------------------------
-        Phi0 - 
+        start - 
         
-        atm - 
-        
-        ice - 
-        
-        atmice - 
-        
-        prod - 
-        
-        prodfull - 
-        
-        flow - 
-        
-        flowfull - 
+        end - 
         
         output - bool
             
@@ -2385,178 +1016,26 @@ class Propagator:
         Returns
         -----------------------
         if output, returns:
-        Phi_atm - 
-            
-        Phi_ice - 
-            
-        P_14C - 
-            
-        CO - 
+        Phi - 
             
         """
+        if end == -1:
+            end = len(self.stages)-1
+        if models is None:
+            models = self.models
         
-        # Add models that directly load in values
-        
-        self.Phi0 = Phi0
-        #Phi0
-        #axis0 - Primary Model (Energy spectrum & Time dependence)
-        #axis1 - Particle Species (proton, neutron)
-        #axis2 - Primary Energy
-
-        self.Phi_atm = np.array([a[0](self.Phi0, *a[1]) for a in atm])
-        #Phi_atm
-        #axis0 - Atmospheric Model
-        #axis1 - Primary Model
-        #axis2 - Zenith Angle
-        #axis3 - Muon Charge (positive, negative)
-        #axis4 - Muon Energy
-
-        print('Atmosphere complete')
-
-        if len(self.Phi_atm)>0 and len(ice)>0:
-            self.Phi_ice = np.array([i[0](self.Phi_atm, *i[1]) for i in ice])
-            self.Phi_ice = np.reshape(self.Phi_ice, (-1, *np.shape(self.Phi_ice)[2:]))
-            if len(atmice)>0:
-                self.Phi_ice = np.concatenate((self.Phi_ice, [ai[0](self.Phi0, *ai[1]) for ai in atmice]))
-        else:
-            self.Phi_ice = np.array([ai[0](self.Phi0, *ai[1]) for ai in atmice])
-        #Phi_ice
-        #axis0 - Atmospheric & Ice Models
-        #axis1 - Primary Model
-        #axis2 - Muon Charge (positive, negative)
-        #axis3 - Muon Energy
-        #axis4 - depth (top -> bottom)
-
-        print('Ice complete')
-
-        if len(self.Phi_ice)>0 and len(prod)>0:
-            self.P_14C = np.array([p[0](self.Phi_ice, *p[1]) for p in prod])
-            self.P_14C = np.reshape(self.P_14C, (-1, *np.shape(self.P_14C)[2:]))
-            if len(prodfull)>0:
-                self.P_14C = np.concatenate((self.P_14C, [pf[0](self.Phi0, *pf[1]) for pf in prodfull]))
-        else:
-            self.P_14C = np.array([pf[0](self.Phi0, *pf[1]) for pf in prodfull])
-        #P_14C
-        #axis0 - Production, Atmospheric & Ice Models
-        #axis1 - Primary Model
-        #axis2 - Production Mode (fast, neg)
-        #axis3 - depth (top -> bottom)
-
-        print('Production Rates complete')
-
-        if len(self.P_14C)>0 and len(flow)>0:
-            self.CO = np.array([f[0](self.P_14C, *f[1]) for f in flow])
-            self.CO = np.reshape(self.CO, (-1, *np.shape(self.CO)[2:]))
-            if len(flowfull)>0:
-                self.CO = np.concatenate((self.CO, [ff[0](self.Phi0, *ff[1]) for ff in flowfull]))
-        else:
-            self.CO = np.array([ff[0](self.Phi0, *ff[1]) for ff in flowfull])
-        #CO
-        #axis0 - Flow, Production, Atmospheric & Ice Models
-        #axis1 - Primary Model
-        #axis2 - depth (top -> bottom)
-
-        print('14CO profile calculated')
+        for s in self.stages[start:end+1]:
+            print('Running {} stage...'.format(s))
+            if clear:
+                self.Phi[s] = np.concatenate([m.run(self) for m in models[s]])
+                self.model_names[s] = sum([sum([['{}{}'.format(i,n) for i in self.model_names.get(m.input,[''])] for n in m.names], []) for m in models[s]], [])
+            else:
+                self.Phi[s] = np.append(self.Phi[s], np.concatenate([m.run(self) for m in models[s]]), axis=0)
+                self.model_names[s] += sum([sum([['{}{}'.format(i,n) for i in self.model_names.get(m.input,[''])] for n in m.names], []) for m in models[s]], [])
+            print('{} stage complete'.format(s))
         
         if output:
-            return self.Phi_atm, self.Phi_ice, self.P_14C, self.CO # should have an option to return intermediate steps as well
-        return
-    
-    def get_primary(self, primary_model = (pm.GlobalSplineFitBeta, None)):
-        
-        """
-        
-        
-        Parameters
-        ---------------------
-        primary_model - 
-            
-        
-        Returns
-        ----------------------
-        Phi0 - 
-            
-        """
-        
-        self.mceq.set_primary_model(*primary_model)
-        pname = self.mceq.pman.pname2pref
-        return np.array([self.mceq._phi0[pname['p+'].lidx:pname['p+'].uidx], self.mceq._phi0[pname['n0'].lidx:pname['n0'].uidx]])
-
-    def load_primary(self, p_models=None, output=False): # primary CR intensities
-        """
-        
-        
-        Parameters
-        --------------------
-        p_models - 
-            
-        output - 
-            
-        
-        Returns
-        ------------------
-        if output, returns:
-        Phi0 - 
-            
-        """
-        if p_models is None:
-            p_models = self.p_models
-        self.Phi0 = np.array([self.get_primary(p) for p in p_models])
-        
-        if output:
-            return self.Phi0
-        return
-    
-    def set_primary(self, Phi0, output=False):
-        
-        """
-        
-        
-        Parameters
-        ----------------------
-        Phi0 - 
-        
-        output - 
-        
-        
-        Returns
-        --------------------
-        if output, returns:
-        Phi0 - 
-            
-        """
-        
-        self.Phi0 = Phi0
-        if output:
-            return self.Phi0
-        return
-    
-    def set_primary_identity(self, output=False):
-        
-        """
-        
-        
-        Parameters
-        ------------------
-        output - bool
-        
-        
-        Returns
-        ------------------
-        if output, returns:
-        Phi0 - 
-            
-        """
-        
-        # sets up primary flux matrix to test each energy of p+ and n0 individually
-        
-        self.Phi0 = np.zeros((240, 2, len(self.E)))
-        for i in range(2):
-            for j in range(len(self.E)):
-                self.Phi0[len(self.E)*i+j, i, j] = 1.
-        
-        if output:
-            return self.Phi0
+            return self.Phi # should have an option to return intermediate steps as well
         return
     
     # def set_primary_data
