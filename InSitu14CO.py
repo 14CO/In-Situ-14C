@@ -25,6 +25,8 @@ import daemonflux
 
 import Functions_14CO as F
 
+from scipy import stats
+
 # could split this into:
 # Sites
 # Calculation Steps (Models)
@@ -34,16 +36,32 @@ import Functions_14CO as F
 
 class ModelStep:
 
-    def __init__(self, function=None, params=None, name=''):
-        self.function = function
+    def __init__(self, function=None, params=None, names=''):
+        
         if type(params) is list or type(params) is np.ndarray:
             self.params = params
         else:
             self.params = [params]
-        if type(name) is list or type(name) is np.ndarray:
-            self.names = name
+            
+        if type(names) is list or type(names) is np.ndarray:
+            self.names = names
         else:
-            self.names = [name]
+            self.names = [names]
+            
+        if callable(function):
+            self.function = function
+            a = self.function(None)
+            if type(a) is tuple:
+                self.input = a[0]
+                n = a[1]
+            else:
+                self.input = a
+                n = None
+            if names=='' and not (n is None):
+                self.names = n
+        else:
+            self.function = None
+            self.input = ''
         
         if len(self.names) > len(self.params):
             self.names = self.names[:len(self.params)]
@@ -52,11 +70,6 @@ class ModelStep:
                 self.names = ['']*len(self.params)
             else:
                 self.names = ['{}-{}'.format(self.names[0], p) for p in self.params]
-        
-        if self.function is None:
-            self.input = ''
-        else:
-            self.input = self.function(None)
             
         if self.input != '':
             self.names = ['_'+n if n!='' else n for n in self.names]
@@ -268,7 +281,7 @@ class Propagator:
         Dictionary of functions to be run and their parameters, indexed by a name
         primary CR flux -> 14CO profile
     """
-    def __init__(self, pressure = 65800, elev=3120, rho_ice = 0.9239, f_factors = [0.072, 0.066], ice_eq_depth_file = 'Real_vs_ice_eq_depth.csv', age_scale_file = 'DomeC_age_scale_Apr2023.csv', z_min = 0, z_deep = 300, z_start = 96.5, sample_length = 20, N_ang = 10, logE_min = -1, logE_max = 11, logE_mu_max = 7, dlogE = 0.1):
+    def __init__(self, pressure = 65800, elev=3120, rho_ice = 0.9239, f_factors = [0.072, 0.066], ice_eq_depth_file = 'Real_vs_ice_eq_depth.csv', age_scale_file = 'DomeC_age_scale_Apr2023.csv', z_min = 0, z_deep = 300, z_start = 96.5, sample_depths = (100.,301.,20.), N_ang = 10, logE_min = -1, logE_max = 11, logE_mu_max = 7, dlogE = 0.1):
         """
         
         Parameters
@@ -303,8 +316,11 @@ class Propagator:
             Depth at which sampling starts [m]
         z_deep - int or float
             Maximum depth of calculation [m]
-        sample_length - int or float
-            Length of core samples [m]
+        sample_depths : tuple or array-like of int or float
+            tuple : parameters for numpy.arange to define a 1D array of sample bin edges
+            1D array : sample bin edges, connected
+            2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
+            units: depth [m]
         N_ang - int
             Number of zenith angle bins [unitless]
             zenith angle bins are equally spaced in solid angle
@@ -317,7 +333,7 @@ class Propagator:
         """
         
         # load in depth, mass depth, and time bins (default location - Dome C, Antarctica)
-        self.load_ice_profile(ice_eq_depth_file, age_scale_file, rho_ice, z_min, z_deep, z_start, sample_length)
+        self.load_ice_profile(ice_eq_depth_file, age_scale_file, rho_ice, z_min, z_deep, z_start, sample_depths)
         
         # set zenith angle bins (default 10 equally spaced in solid angle)
         self.set_zenith_bins(N_ang)
@@ -386,7 +402,7 @@ class Propagator:
         # works by interpolating the inverse function of a[i]
         return max(min(int(np.interp(x, a, np.arange(len(a))))+1, len(a)-1), 0)
     
-    def load_ice_profile(self, ice_eq_depth_file, age_scale_file, rho_ice = None, z_min = None, z_deep = None, z_start = None, sample_length = None):
+    def load_ice_profile(self, ice_eq_depth_file, age_scale_file, rho_ice = None, z_min = None, z_deep = None, z_start = None, sample_depths = None):
         if rho_ice is None:
             rho_ice = self.rho_ice
         if z_min is None:
@@ -395,8 +411,8 @@ class Propagator:
             z_deep = self.z_deep
         if z_start is None:
             z_start = self.z_start
-        if sample_length is None:
-            sample_length = self.sample_length
+        if sample_depths is None:
+            sample_depths = self.sample_depths
             
         """
         Loads ice profile data from .csv files to setup depth bins
@@ -424,8 +440,11 @@ class Propagator:
             Depth at which sampling starts [m]
         z_deep - int or float
             Maximum depth of calculation [m]
-        sample_length - int or float
-            Length of core samples [m]
+        sample_depths : tuple or array-like of int or float
+            tuple : parameters for numpy.arange to define a 1D array of sample bin edges
+            1D array : sample bin edges, connected
+            2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
+            units: depth [m]
         """
         
         #self.age_scale_file = age_scale_file # relationship between age and depth of ice at Dome-C
@@ -443,11 +462,11 @@ class Propagator:
         
         self.rho_ice = rho_ice # density of solid ice at Dome C (g/cm^3)
         
-        self.set_mass_depth(depths_real, np.interp(depths_real, real_z, ice_eq_z)*self.rho_ice, ages, z_min, z_deep, z_start, sample_length)
+        self.set_mass_depth(depths_real, np.interp(depths_real, real_z, ice_eq_z)*self.rho_ice, ages, z_min, z_deep, z_start, sample_depths)
         
         return
     
-    def set_mass_depth(self, z_bins, h_bins, t_bins = None, z_min = None, z_deep = None, z_start = None, sample_length = None):
+    def set_mass_depth(self, z_bins, h_bins, t_bins = None, z_min = None, z_deep = None, z_start = None, sample_depths = None):
         if t_bins is None:
             t_bins = np.arange(len(z_bins))
         if z_min is None:
@@ -456,8 +475,8 @@ class Propagator:
             z_deep = self.z_deep
         if z_start is None:
             z_start = self.z_start
-        if sample_length is None:
-            sample_length = self.sample_length
+        if sample_depths is None:
+            sample_depths = self.sample_depths
             
         """
         Sets up depth bins using real and water-equivalent depths
@@ -479,8 +498,11 @@ class Propagator:
             Depth at which sampling starts [m]
         z_deep - int or float
             Maximum depth of calculation [m]
-        sample_length - int or float
-            Length of core samples [m]
+        sample_depths : tuple or array-like of int or float
+            tuple : parameters for numpy.arange to define a 1D array of sample bin edges
+            1D array : sample bin edges, connected
+            2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
+            units: depth [m]
         """
         
         self.z_min = z_min # starting depth for plots (m)
@@ -506,19 +528,19 @@ class Propagator:
         self.t = (self.t_bins[:-1]+self.t_bins[1:])/2 # bin-average of t (years)
         self.dt = np.diff(self.t_bins) # bin-width of t (years)
         
-        self.setup_sample_bins(z_start, sample_length)
+        self.setup_sample_bins(z_start, sample_depths)
         
         return
     
-    def load_density(self, density_file, age_scale_file = None, z_min = None, z_deep = None, z_start = None, sample_length = None):
+    def load_density(self, density_file, age_scale_file = None, z_min = None, z_deep = None, z_start = None, sample_depths = None):
         if z_min is None:
             z_min = self.z_min
         if z_deep is None:
             z_deep = self.z_deep
         if z_start is None:
             z_start = self.z_start
-        if sample_length is None:
-            sample_length = self.sample_length
+        if sample_depths is None:
+            sample_depths = self.sample_depths
             
         """
         Loads ice density data from .csv files to setup depth bins
@@ -542,8 +564,11 @@ class Propagator:
             Depth at which sampling starts [m]
         z_deep - int or float
             Maximum depth of calculation [m]
-        sample_length - int or float
-            Length of core samples [m]
+        sample_depths : tuple or array-like of int or float
+            tuple : parameters for numpy.arange to define a 1D array of sample bin edges
+            1D array : sample bin edges, connected
+            2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
+            units: depth [m]
         """
             
         self.density_file = density_file # relationship bewteen ice-equivalent-depth and real-depth at Dome-C
@@ -563,9 +588,9 @@ class Propagator:
             depths_real = np.array(age_scale['depths_real']) # meters
             t_bins = np.interp(real_z, depths_real, ages)
         
-        self.set_density(real_z, rho, t_bins, z_min, z_deep, z_start, sample_length)
+        self.set_density(real_z, rho, t_bins, z_min, z_deep, z_start, sample_depths)
     
-    def set_density(self, z_bins, rho, t_bins = None, z_min = None, z_deep = None, z_start = None, sample_length = None):
+    def set_density(self, z_bins, rho, t_bins = None, z_min = None, z_deep = None, z_start = None, sample_depths = None):
         if t_bins is None:
             t_bins = np.arange(len(z_bins))
         if z_min is None:
@@ -574,8 +599,8 @@ class Propagator:
             z_deep = self.z_deep
         if z_start is None:
             z_start = self.z_start
-        if sample_length is None:
-            sample_length = self.sample_length
+        if sample_depths is None:
+            sample_depths = self.sample_depths
             
         """
         Sets up depth bins using real and water-equivalent depths
@@ -597,8 +622,11 @@ class Propagator:
             Depth at which sampling starts [m]
         z_deep - int or float
             Maximum depth of calculation [m]
-        sample_length - int or float
-            Length of core samples [m]
+        sample_depths : tuple or array-like of int or float
+            tuple : parameters for numpy.arange to define a 1D array of sample bin edges
+            1D array : sample bin edges, connected
+            2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
+            units: depth [m]
         """
         
         self.z_min = z_min # starting depth for plots (m)
@@ -624,47 +652,74 @@ class Propagator:
         self.t = (self.t_bins[:-1]+self.t_bins[1:])/2 # bin-average of t (years)
         self.dt = np.diff(self.t_bins) # bin-width of t (years)
         
-        self.setup_sample_bins(z_start, sample_length)
+        self.setup_sample_bins(z_start, sample_depths)
         
         return
     
-    def setup_sample_bins(self, z_start = None, sample_length = None):
+    def setup_sample_bins(self, z_start = None, sample_depths = None):
         if z_start is None:
             z_start = self.z_start
-        if sample_length is None:
-            sample_length = self.sample_length
+        if sample_depths is None:
+            sample_depths = self.sample_depths
             
         """
         Sets up transformation from depths used in calculation to sample depth bins
         
         Parameters
         ---------------
-        z_start - int or float
+        z_start : int or float
             Depth at which sampling starts [m]
-        sample_length - int or float
-            Length of core samples [m]
+        sample_depths : tuple or array-like of int or float
+            tuple : parameters for numpy.arange to define a 1D array of sample bin edges
+            1D array : sample bin edges, connected
+            2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
+            units: depth [m]
         """
         
         self.z_start = z_start # starting depth of 14C accumulation (m) - close-off depth beneath firn layer
-        self.sample_length = sample_length # length of ice core samples (m)
+        self.sample_depths = sample_depths # length of ice core samples (m)
 
-        self.i_start = self.argnear_below(self.z_start, self.z_bins) # index of first bin beneath starting point for 14C accumulation
-
-        z_samp_ideal = np.arange(self.z_bins[self.i_start],self.z_bins[-1],self.sample_length)
-        i_samp = np.append(np.argmin(abs(self.z_bins.reshape((1,-1))-z_samp_ideal.reshape(-1,1)), axis=1), len(self.z_bins)-1)
-        i_samp[0] = self.i_start # just making sure
+        self.i_start = self.argnear_below(self.z_start, self.z_bins) # index of first bin above starting point for 14C accumulation
+        
+        if type(self.sample_depths) is tuple:
+            z_samp_bins = np.array([np.arange(*self.sample_depths)[:-1], np.arange(*self.sample_depths)[1:]])
+        elif len(np.shape(self.sample_depths)) == 1:
+            z_samp_bins = np.array([self.sample_depths[:-1], self.sample_depths[1:]])
+        elif len(np.shape(self.sample_depths)) == 2:
+            z_samp_bins = np.array(self.sample_depths)[:2]
+        else:
+            print('Invalid Sample Depths Format')
+            z_samp_bins = np.array([[self.z_start],[self.z_deep]])
+        
+        self.z_samp_bins = z_samp_bins
+        self.z_samp = (self.z_samp_bins[0] + self.z_samp_bins[1])/2
+        self.dz_samp = self.z_samp_bins[1]-self.z_samp_bins[0]
+        
+        i_samp_bins = np.expand_dims(np.interp(self.z_samp_bins, self.z_bins, np.arange(len(self.z_bins))), axis=1)
+        i = np.reshape(np.arange(len(self.dh)), (-1,1))
+        
+        # matrix of the mass/cm^2 of each depth bin which is within the bounds of each sample bin
+        dh_samp_mat = np.reshape(self.dh, (-1,1)) * ( (i_samp_bins[1]-i).clip(0,1) - (i_samp_bins[0]-i).clip(0,1) )
+        
+        self.S_mat = dh_samp_mat / np.sum(dh_samp_mat, axis=0, keepdims=True)
+        # self.S_mat: sample matrix, averages over sample depth range
+        # axis0 - depth bins, len(z)
+        # axis1 - sample bins, len(z_samp)
+        
+        #i_samp = np.append(np.argmin(abs(self.z_bins.reshape((1,-1))-z_samp_ideal.reshape(-1,1)), axis=1), len(self.z_bins)-1)
+        #i_samp[0] = self.i_start # just making sure
 
         # Define sample depth bins
-        self.z_samp_bins = self.z_bins[i_samp] # sample depth bin edges (m)
-        self.z_samp = (self.z_samp_bins[:-1]+self.z_samp_bins[1:])/2 # bin-average of sample depth (m)
-        self.dz_samp = np.diff(self.z_samp_bins) # bin-width of sample depth (m)
+        #self.z_samp_bins = self.z_bins[i_samp] # sample depth bin edges (m)
+        #self.z_samp = (self.z_samp_bins[:-1]+self.z_samp_bins[1:])/2 # bin-average of sample depth (m)
+        #self.dz_samp = np.diff(self.z_samp_bins) # bin-width of sample depth (m)
 
         # Define sample compression matrix
-        dh_samp = np.zeros(len(i_samp)-1)
-        self.S_mat = np.zeros((len(self.z_bins)-1, len(i_samp)-1))
-        for i in range(len(i_samp)-1):
-            dh_samp[i] = np.sum(self.dh[i_samp[i]:i_samp[i+1]])
-            self.S_mat[i_samp[i]:i_samp[i+1], i] = self.dh[i_samp[i]:i_samp[i+1]]/dh_samp[i]
+        #dh_samp = np.zeros(len(i_samp)-1)
+        #self.S_mat = np.zeros((len(self.z_bins)-1, len(i_samp)-1))
+        #for i in range(len(i_samp)-1):
+            #dh_samp[i] = np.sum(self.dh[i_samp[i]:i_samp[i+1]])
+            #self.S_mat[i_samp[i]:i_samp[i+1], i] = self.dh[i_samp[i]:i_samp[i+1]]/dh_samp[i]
         
         return
     
@@ -1027,15 +1082,19 @@ class Propagator:
         for s in self.stages[start:end+1]:
             print('Running {} stage...'.format(s))
             if clear:
-                self.Phi[s] = np.concatenate([m.run(self) for m in models[s]])
+                self.Phi[s] = np.concatenate([m.run(self) for m in models[s]]) if len(models[s])>0 else np.zeros((0,*np.shape(self.Phi[s])[1:]))
                 self.model_names[s] = sum([sum([['{}{}'.format(i,n) for i in self.model_names.get(m.input,[''])] for n in m.names], []) for m in models[s]], [])
             else:
-                self.Phi[s] = np.append(self.Phi[s], np.concatenate([m.run(self) for m in models[s]]), axis=0)
+                self.Phi[s] = np.append(self.Phi[s], np.concatenate([m.run(self) for m in models[s]]), axis=0) if len(models[s])>0 else self.Phi[s]
                 self.model_names[s] += sum([sum([['{}{}'.format(i,n) for i in self.model_names.get(m.input,[''])] for n in m.names], []) for m in models[s]], [])
             print('{} stage complete'.format(s))
         
         if output:
             return self.Phi # should have an option to return intermediate steps as well
+        return
+    
+    def get_sensitivity(f_var='linear', error=0.02, amp=None, a_weights=None, P_14C=None, p_weights=None, f_file='factors_2sigma_hull.csv', Pres_conv=True, Normalize=True, Gauss_prod=True, Gauss_f=True, Int_f_all=True, Sample_f=True):
+        
         return
     
     # def set_primary_data

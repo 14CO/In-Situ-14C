@@ -501,7 +501,7 @@ def E_surf(Prop, E_d, X, a=None, b=None):
 
     return ((E_d + a/b)*np.exp(X*b)-a/b).clip(min=Prop.E_bins[0])
 
-def Heisinger_ice(Prop, norm=True, a=None, b=None, H=None):
+def Heisinger_ice(Prop, norm=True, loop=False, a=None, b=None, H=None):
     if Prop is None: # run function with Prop=None to get input stage
         return 'atm'
     
@@ -544,41 +544,59 @@ def Heisinger_ice(Prop, norm=True, a=None, b=None, H=None):
     #axis2 - Muon Charge (positive, negative)
     #axis3 - Muon Energy
 
-    X = np.reshape(Prop.h_bins,(1,1,-1))/np.reshape(Prop.cosTH,(1,-1,1))
+    X = np.reshape(Prop.h_bins,(1,1,-1))/np.reshape(Prop.cosTH,(1,-1,1)) # slant-depth
 
     E_bounds = E_surf(Prop, np.reshape(Prop.E_mu_bins,(-1,1,1)), X, a, b) # Energy bins at depth projected back to their surface energies
+    #axis0 - Projected Energy
+    #axis1 - Zenith Angle
+    #axis2 - Depth (top -> bottom)
+    
+    if not loop: # new, direct sum calculation (uses more memory)
+        E_proj = np.expand_dims(E_bounds.swapaxes(0,1), (1,2))
 
-    Phi_proj = np.zeros((np.shape(Phi_atm)[0], 2, len(Prop.E_mu), len(Prop.h_bins)))
+        Phi_proj = np.array([np.sum(np.expand_dims(p, (3,4)) * Prop.dcosTH.reshape((-1,1,1,1,1)) * ( (E_proj[:,:,:,1:] - Prop.E_mu_bins[:-1].reshape((1,1,-1,1,1))).clip(0,Prop.dE_mu.reshape(1,1,-1,1,1)) - (E_proj[:,:,:,:-1] - Prop.E_mu_bins[:-1].reshape((1,1,-1,1,1))).clip(0,Prop.dE_mu.reshape(1,1,-1,1,1)) ), axis=(0,2)) for p in tqdm(Phi_atm)]) * 2 * np.pi / Prop.dE_mu.reshape((1,1,-1,1))
+        # Phi_proj_i dE_i = sum_j Phi_atm_j 2pi cosTH_j [ (E_proj_(i+1) - E_j).clip(0,dE_j) - (E_proj_i - E_j).clip(0,dE_j) ]
+        #axis0 - Atmopsheric Model
+        #axis1 - Zenith Angle (SUM)
+        #axis2 - Muon Charge (positive, negative)
+        #axis3 - Surface Energy (SUM)
+        #axis4 - Projected Energy
+        #axis5 - Depth (top -> bottom)
+        
+    else: # old looping calculation
+        Phi_proj = np.zeros((np.shape(Phi_atm)[0], 2, len(Prop.E_mu), len(Prop.h_bins)))
 
-    # Now, this is going to look incomprehensible, but...
-    for i in tqdm(range(len(Prop.cosTH))):
-        for j in range(len(Prop.h_bins)):
-            E_proj = E_bounds[:,i,j]
-            deep = True # Starting from a Phi_proj energy bin edge?  False means Phi_atm
-            #print(i,j,E_proj[0])
-            k=np.arange(len(Prop.E_mu_bins))[Prop.E_mu_bins<=E_proj[0]][-1] # current Phi_atm energy bin
-            l=0 # current Phi_proj energy bin
-            while k < len(Prop.E_mu_bins)-1 and l < len(E_proj)-1: # step through energy bin edge, one by one, putting muons from Phi_atm into the Phi_proj bin corresponding to their projected underground energy
-                if Prop.E_bins[k+1]<=E_proj[l+1]: # if the next bin edge is from Phi_atm
-                    Phi_proj[:, :, l, j] += Phi_atm[:,i,:,k] * (Prop.E_mu_bins[k+1]-(E_proj[l] if deep else Prop.E_mu_bins[k])) * Prop.dcosTH[i] * 2 * np.pi
-                    k += 1 # Start the next step from Phi_atm's bin edge
-                    deep = False
-                else: # if the next bin boundary is from Phi_proj
-                    Phi_proj[:, :, l, j] += Phi_atm[:,i,:,k] * (E_proj[l+1]-(E_proj[l] if deep else Prop.E_mu_bins[k])) * Prop.dcosTH[i] * 2 * np.pi
-                    l += 1 # Start the next step from Phi_proj's bin edge
-                    deep = True
-            # Hate to use a While loop, but it should have to stop before 2*len(E_bins) steps
+        # Now, this is going to look incomprehensible, but...
+        for i in tqdm(range(len(Prop.cosTH))):
+            for j in range(len(Prop.h_bins)):
+                E_proj = E_bounds[:,i,j]
+                deep = True # Starting from a Phi_proj energy bin edge?  False means Phi_atm
+                #print(i,j,E_proj[0])
+                k=np.arange(len(Prop.E_mu_bins))[Prop.E_mu_bins<=E_proj[0]][-1] # current Phi_atm energy bin
+                l=0 # current Phi_proj energy bin
+                while k < len(Prop.E_mu_bins)-1 and l < len(E_proj)-1: # step through energy bin edge, one by one, putting muons from Phi_atm into the Phi_proj bin corresponding to their projected underground energy
+                    if Prop.E_bins[k+1]<=E_proj[l+1]: # if the next bin edge is from Phi_atm
+                        Phi_proj[:, :, l, j] += Phi_atm[:,i,:,k] * (Prop.E_mu_bins[k+1]-(E_proj[l] if deep else Prop.E_mu_bins[k])) * Prop.dcosTH[i] * 2 * np.pi
+                        k += 1 # Start the next step from Phi_atm's bin edge
+                        deep = False
+                    else: # if the next bin boundary is from Phi_proj
+                        Phi_proj[:, :, l, j] += Phi_atm[:,i,:,k] * (E_proj[l+1]-(E_proj[l] if deep else Prop.E_mu_bins[k])) * Prop.dcosTH[i] * 2 * np.pi
+                        l += 1 # Start the next step from Phi_proj's bin edge
+                        deep = True
+                # Hate to use a While loop, but it should have to stop before 2*len(E_bins) steps
 
-    Phi_proj = Phi_proj / np.reshape(Prop.dE_mu,(1,1,-1,1))
-    #axis0 - Atmospheric Model
-    #axis1 - Muon Charge (positive, negative)
-    #axis2 - Muon Energy
-    #axis3 - depth (top -> bottom)
+        Phi_proj = Phi_proj / np.reshape(Prop.dE_mu,(1,1,-1,1))
+        #axis0 - Atmospheric Model
+        #axis1 - Muon Charge (positive, negative)
+        #axis2 - Muon Energy
+        #axis3 - depth (top -> bottom)
 
     # Normalize the result to Heisinger's total flux fit (elevation adjusted by Balco)
     if norm:
         return Phi_proj / np.sum(Phi_proj * np.reshape(Prop.dE_mu,(1,1,-1,1)), axis=(1,2), keepdims=True) * np.reshape(phi_all(Prop.h_bins,np.append(Prop.dh,Prop.dh[-1]),Prop.H)[0], (1,1,1,-1))
+    
     return Phi_proj
+
 
 def Heisinger_full(Prop, H=None):
     if Prop is None: # run function with Prop=None to get input stage
@@ -1172,6 +1190,11 @@ def flow_14C(Prop, f_t = None, lambd=None):
     
     return np.moveaxis([np.sum(P_14C[:,:,:i+1]*lambda_dt[:,:,-i-1:], axis=-1) for i in tqdm(range(np.shape(P_14C)[-1]))], 0, -1)
     #return diag_sum(np.expand_dims(P_14C[:,:,Prop.i_start:], axis=-1) * lambda_dt)
+    
+def load_prod(Prop, fast_file='Production Rates/P_fast_0m.csv', neg_file='Production Rates/P_neg_0m.csv'):
+    if Prop is None:
+        df_Pfast = pd.read_csv(fast_file)
+        return '', list(df_Pfast.columns)
 
 def load_profile(Prop, file='balco_14co_const_models.fits', i=68):
     if Prop is None: # run function with Prop=None to get input stage
