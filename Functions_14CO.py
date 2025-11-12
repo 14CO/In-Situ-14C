@@ -3,7 +3,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from MCEq.core import MCEqRun
-import mceq_config as config
+#import mceq_config as config
+from MCEq import config
 import crflux.models as pm
 
 from tqdm import tqdm
@@ -11,6 +12,9 @@ from tqdm import tqdm
 from MCEq.geometry.density_profiles import GeneralizedTarget
 
 import daemonflux
+
+import mute.constants as mtc
+import mute.underground as mtu
     
 ## PRIMARY FUNCTIONS
 
@@ -733,7 +737,8 @@ def MCEq_atm(Prop, interaction_model="SIBYLL-2.3c", density_model=('CORSIKA', ('
     #axis1 - Particle Species (proton, neutron)
     #axis2 - Primary Energy
 
-    import mceq_config as config
+    #import mceq_config as config
+    from MCEq import config
     config.debug_level = 0
     config.h_obs = elev # elevation in (m) of Dome-C
     config.enable_default_tracking = False
@@ -817,7 +822,8 @@ def MCEq_ice(Prop, interaction_model="SIBYLL-2.3c", solver='default'):
     #axis2 - Muon Charge (positive, negative)
     #axis3 - Muon Energy
 
-    import mceq_config as config
+    #import mceq_config as config
+    from MCEq import config
     config.debug_level = 0
     config.enable_default_tracking = False
     config.e_min = Prop.E_mu_bins[1]
@@ -912,7 +918,8 @@ def MCEq_atmice(Prop, interaction_model="SIBYLL-2.3c", density_model=('CORSIKA',
     #axis1 - Particle Species (proton, neutron)
     #axis2 - Primary Energy
 
-    import mceq_config as config
+    #import mceq_config as config
+    from MCEq import config
     config.debug_level = 0
     config.h_obs = elev # elevation in (m) of Dome-C
     config.enable_default_tracking = False
@@ -929,7 +936,8 @@ def MCEq_atmice(Prop, interaction_model="SIBYLL-2.3c", density_model=('CORSIKA',
         primary_model = (pm.GaisserHonda, None),
     )
 
-    import mceq_config as config
+    #import mceq_config as config
+    from MCEq import config
     config.debug_level = 0
     config.enable_default_tracking = False
     config.e_min = Prop.E_mu_bins[1]
@@ -1036,6 +1044,45 @@ def daemonflux_atm(Prop):
     #axis3 - Muon Energy
 
     return Phi_atm
+
+def mute_ice(Prop):
+    if Prop is None:
+        return ''
+    
+    K_mu = 1.268 # positive-to-negative muon ratio (mute doesn't track muon charge it seems)
+    
+    mtc.clear()
+    mtc.set_overburden('flat')
+    mtc.shallow_extrapolation = True # lets mute extrapolate to depths above 500 m.w.e.
+    mtc.set_medium('ice')
+    #mtc.set_density(Prop.rho_ice) # once this is depricated, change to below
+    mtc.set_reference_density(Prop.rho_ice)
+    
+    mtc._E_BINS = Prop.E_mu_bins*1e3 # units: MeV
+    mtc._E_WIDTHS = Prop.dE_mu*1e3
+    mtc.ENERGIES = Prop.E_mu*1e3
+    
+    Phi_ice = np.zeros((1,2,len(Prop.E_mu),len(Prop.h)))
+    
+    for i in tqdm(range(len(Prop.h))):
+        mtc._vertical_depth = Prop.h[i]
+        mtc.slant_depths = Prop.h[i]/Prop.cosTH_bins[:-1]
+        mtc.angles = np.degrees(np.arccos(Prop.cosTH_bins[:-1]))
+        Phi_ice[0,0,:,i] = mtu.calc_u_e_spect()
+    
+    # split up intensity between positive and negative muons
+    Phi_ice[0,1] = Phi_ice[0,0] * 1/(K_mu+1)
+    Phi_ice[0,0] = Phi_ice[0,0] * K_mu/(K_mu+1)
+    
+    Phi_ice *= 1e3 #convert units from (cm^2 s MeV)^-1 to (cm^2 s GeV)^-1
+    
+    #Phi_ice
+    #axis0 - Underice Model
+    #axis1 - Muon Charge (positive, negative)
+    #axis2 - Muon Energy
+    #axis3 - depth (top -> bottom)
+    
+    return Phi_ice
 
 def Dyonisius_prod(Prop, sigma_E = None, E_sigma = None, alpha = None, N = None, f_tot = None):
     if Prop is None: # run function with Prop=None to get input stage

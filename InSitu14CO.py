@@ -7,7 +7,8 @@ import numpy as np
 import os.path
 
 from MCEq.core import MCEqRun
-import mceq_config as config
+#import mceq_config as config
+from MCEq import config
 import crflux.models as pm
 
 from tqdm import tqdm
@@ -1125,27 +1126,33 @@ class Propagator:
     
     # def save_ice_to_csv
     
-    def save_prod_to_csv(self, folder=''):
-        if folder != '':
-            folder = folder+'/'
+    def save_prod_to_csv(self, tag=''):
+        if tag != '':
+            tag += '_'
             
         """
         
         
         Parameters
         -----------------
-        folder - 
+        tag - 
             
         """
         
-        # iterate this
-        np.savetxt('{}P_fast_p+_{}_{}m.csv'.format(folder, self.atmice_labels[0], self.elev), self.P_14C[0,:120,0], delimiter=',')
-        np.savetxt('{}P_fast_n0_{}_{}m.csv'.format(folder, self.atmice_labels[0], self.elev), self.P_14C[0,120:,0], delimiter=',')
-        np.savetxt('{}P_neg_p+_{}_{}m.csv'.format(folder, self.atmice_labels[0], self.elev), self.P_14C[0,:120,1], delimiter=',')
-        np.savetxt('{}P_neg_n0_{}_{}m.csv'.format(folder, self.atmice_labels[0], self.elev), self.P_14C[0,120:,1], delimiter=',')
-
-        np.savetxt('{}Depth.csv'.format(folder), self.z, delimiter=',')
-        np.savetxt('{}Energy.csv'.format(folder), self.E, delimiter=',')
+        # Note: this method doesn't work if two production rates have the same name
+        
+        P_fast = dict()
+        P_neg = dict()
+        for i,n in enumerate(self.model_names['prod']):
+            P_fast[n] = self.Phi['prod'][i,0]
+            P_neg[n] = self.Phi['prod'][i,1]
+            
+        df_fast = pd.DataFrame(P_fast)
+        df_neg = pd.DataFrame(P_neg)
+        df_fast.to_csv('Production Rates/P_fast_{}m{}.csv'.format(self.elev, tag), index=False)
+        print('Saved to:  Production Rates/P_fast_{}m{}.csv'.format(self.elev, tag))
+        df_neg.to_csv('Production Rates/P_neg_{}m{}.csv'.format(self.elev, tag), index=False)
+        print('Saved to:  Production Rates/P_neg_{}m{}.csv'.format(self.elev, tag))
         
         return
     
