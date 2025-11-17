@@ -35,6 +35,9 @@ from scipy import stats
 
 # I can speed up in-ice calculations by capping muon energy at 100 TeV
 
+def T(A):
+    return np.swapaxes(A, -1,-2)
+
 class ModelStep:
 
     def __init__(self, function=None, params=None, names=''):
@@ -282,7 +285,7 @@ class Propagator:
         Dictionary of functions to be run and their parameters, indexed by a name
         primary CR flux -> 14CO profile
     """
-    def __init__(self, pressure = 65800, elev=3120, rho_ice = 0.9239, f_factors = [0.072, 0.066], ice_eq_depth_file = 'Real_vs_ice_eq_depth.csv', age_scale_file = 'DomeC_age_scale_Apr2023.csv', z_min = 0, z_deep = 300, z_start = 96.5, sample_depths = (100.,301.,20.), N_ang = 10, logE_min = -1, logE_max = 11, logE_mu_max = 7, dlogE = 0.1):
+    def __init__(self, pressure = 65800, elev=3120, rho_ice = 0.9239, f_factors = [0.072, 0.066], ice_eq_depth_file = 'Real_vs_ice_eq_depth.csv', age_scale_file = 'DomeC_age_scale_Apr2023.csv', z_min = 0, z_deep = 300, z_start = 96.5, sample_depths = (100.,301.,20.), N_ang = 10, logE_min = -1, logE_max = 11, logE_mu_max = 7, dlogE = 0.1, rel_err=0.02):
         """
         
         Parameters
@@ -359,6 +362,14 @@ class Propagator:
         
         # 14C Decay parameter
         self.lambd = 1.21e-4 #yr^-1
+        
+        # default relative uncertainty in 14CO measurements
+        self.rel_err = rel_err
+        
+        self.c_samp = None
+        self.c_weights = None
+        self.c_pred = None
+        self.cov_pred = None
             
         self.p_models = [(pm.GlobalSplineFitBeta, None), (pm.HillasGaisser2012, "H3a"), (pm.HillasGaisser2012, "H4a"), (pm.PolyGonato, False),
                    (pm.GaisserStanevTilav, "3-gen"), (pm.GaisserStanevTilav, "4-gen"), (pm.CombinedGHandHG, "H3a"),
@@ -1091,10 +1102,90 @@ class Propagator:
             print('{} stage complete'.format(s))
         
         if output:
-            return self.Phi # should have an option to return intermediate steps as well
+            return self.Phi
         return
     
-    def get_sensitivity(f_var='linear', error=0.02, amp=None, a_weights=None, P_14C=None, p_weights=None, f_file='factors_2sigma_hull.csv', Pres_conv=True, Normalize=True, Gauss_prod=True, Gauss_f=True, Int_f_all=True, Sample_f=True):
+    def calc_gauss_pred(self, c_samp = None, c_weights=None, output=False):
+        if c_samp is None:
+            if self.c_samp is None:
+                c_samp = self.Phi['CO']@self.S_mat[self.i_start:]
+            else:
+                c_samp = self.c_samp
+        if c_weights is None:
+            if self.c_weights is None:
+                c_weights = np.ones(len(c_samp))
+            elif len(self.c_weights)==len(c_samp):
+                c_weights = self.c_weights
+            else:
+                c_weights = np.ones(len(c_samp))
+        
+        self.c_samp = c_samp
+        self.c_weights = c_weights
+        self.c_pred = np.average(c_samp, weights=c_weights, axis=0)
+        self.cov_pred = np.cov(c_samp, aweights=c_weights, rowvar=False)
+        
+        if output:
+            return self.c_pred, self.cov_pred
+        return
+    
+    def get_samples(self, N=1, c_pred=None, cov_pred=None, rel_err=None):
+        if c_pred is None:
+            if self.c_pred is None:
+                self.calc_gauss_pred()
+            c_pred = self.c_pred
+        if cov_pred is None:
+            if self.cov_pred is None:
+                self.calc_gauss_pred()
+            cov_pred = self.cov_pred
+        if rel_err is None:
+            rel_err = self.rel_err
+        
+        c = np.random.multivariate_normal(c_pred, cov_pred, N)
+        s = np.random.normal(1., rel_err, (N,len(c_pred)))
+        
+        return c*s, c*s * rel_err
+    
+    def log_likelihood(self, c, c_err=None, c_pred=None, cov_pred=None):
+        N_samp = len(self.z_samp)
+        
+        c = np.reshape(c, (-1,N_samp))
+        if c_err is None:
+            c_err = c * self.rel_err
+        else:
+            c_err = np.reshape(c_err, np.shape(c))
+        if c_pred is None:
+            c_pred = self.c_pred
+        c_pred = np.reshape(c_pred, (1,N_samp))
+        if cov_pred is None:
+            cov_pred = self.cov_pred
+        
+        # Calculate total systematic uncertainty
+        # Sigma = cov_pred + np.diag(c_err**2)
+        # I can't find a quick way to diagonalize axis1 into axis 1&2 while preserving axis0
+        Sigma = np.reshape(cov_pred, (1,N_samp,N_samp)) * np.ones((len(c_err),1,1))
+        for i in range(N_samp): # add experimental variance along diagonal
+            Sigma[:,i,i] += c_err[:,i]**2
+        Sigma_inv = np.linalg.inv(Sigma)
+        
+        # difference between measurements and prediction
+        x = (c-np.reshape(c_pred, (1,N_samp))).reshape((-1,N_samp,1))
+        
+        # Calculate chi-square
+        chi2 = (T(x)@Sigma_inv@x)[:,0,0]
+        
+        # Convert to log_likelihood
+        logL = -chi2/2 - np.log(2*np.pi*np.linalg.det(Sigma))/2
+        
+        # Convert to p-value
+        # (using chi_square to calculate, becauSe I can't think how to convert log_likelihood off the top of my head)
+        p = stats.chi2.sf(chi2, N_samp)
+        
+        # Convert to # of standard deviations
+        sig = stats.norm.isf(p/2.)
+        
+        return logL, p, sig
+    
+    def get_sensitivity(self, f_var='linear', error=0.02, amp=None, a_weights=None, P_14C=None, p_weights=None, f_file='factors_2sigma_hull.csv', Pres_conv=True, Normalize=True, Gauss_prod=True, Gauss_f=True, Int_f_all=True, Sample_f=True):
         
         return
     
