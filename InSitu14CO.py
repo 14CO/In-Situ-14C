@@ -1107,21 +1107,28 @@ class Propagator:
     
     def calc_gauss_pred(self, c_samp = None, c_weights=None, output=False):
         if c_samp is None:
-            if self.c_samp is None:
+            if self.c_samp is None: # calculate the predicted 14CO samples if it hasn't been done already
                 c_samp = self.Phi['CO']@self.S_mat[self.i_start:]
             else:
                 c_samp = self.c_samp
         if c_weights is None:
-            if self.c_weights is None:
+            if self.c_weights is None: # if weights haven't been provided, assume all models are equal
                 c_weights = np.ones(len(c_samp))
-            elif len(self.c_weights)==len(c_samp):
+            elif len(self.c_weights)==len(c_samp): # if weights have already been used and fit the number of models here, use them
                 c_weights = self.c_weights
-            else:
+            else: # if all else fails, assume all models are equal
                 c_weights = np.ones(len(c_samp))
         
+        # 14CO sample predictions for each model
         self.c_samp = c_samp
+        
+        # relative weight of each model
         self.c_weights = c_weights
+        
+        # average of the 14CO predictions
         self.c_pred = np.average(c_samp, weights=c_weights, axis=0)
+        
+        # covariance matrix for the 14CO predictions
         self.cov_pred = np.cov(c_samp, aweights=c_weights, rowvar=False)
         
         if output:
@@ -1140,9 +1147,13 @@ class Propagator:
         if rel_err is None:
             rel_err = self.rel_err
         
+        # generate random 14CO predictions
         c = np.random.multivariate_normal(c_pred, cov_pred, N)
+        
+        # generate random relative experimental errors
         s = np.random.normal(1., rel_err, (N,len(c_pred)))
         
+        # return simulated 14CO samples w/ experimental error
         return c*s, c*s * rel_err
     
     def log_likelihood(self, c, c_err=None, c_pred=None, cov_pred=None):
