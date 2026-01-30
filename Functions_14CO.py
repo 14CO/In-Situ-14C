@@ -13,8 +13,13 @@ from MCEq.geometry.density_profiles import GeneralizedTarget
 
 import daemonflux
 
-import mute.constants as mtc
-import mute.underground as mtu
+import proposal as pp
+
+from scipy.interpolate import interp1d
+from scipy.io import loadmat
+
+#import mute.constants as mtc
+#import mute.underground as mtu
     
 ## PRIMARY FUNCTIONS
 
@@ -1045,6 +1050,135 @@ def daemonflux_atm(Prop):
 
     return Phi_atm
 
+def get_proposal(Prop, mu_pos=True):
+    if mu_pos:
+        mu = pp.particle.MuPlusDef()
+    else:
+        mu = pp.particle.MuMinusDef()
+    cuts = pp.EnergyCutSettings(500, 0.05, True)
+
+    medium = pp.medium.Water()
+
+    args = {"particle_def": mu, "target": medium, "interpolate": True, "cuts": cuts}
+
+    # Initialise standard cross-sections, then specify and set parametrisation models
+
+    cross_sections = pp.crosssection.make_std_crosssection(**args)
+
+    brems_param = pp.parametrization.bremsstrahlung.KelnerKokoulinPetrukhin(lpm=False)
+    epair_param = pp.parametrization.pairproduction.KelnerKokoulinPetrukhin(lpm=False)
+    ionis_param = pp.parametrization.ionization.BetheBlochRossi(energy_cuts=cuts)
+    shado_param = pp.parametrization.photonuclear.ShadowButkevichMikheyev()
+    photo_param = pp.parametrization.photonuclear.AbramowiczLevinLevyMaor97(
+        shadow_effect=shado_param
+    )
+
+    cross_sections[0] = pp.crosssection.make_crosssection(brems_param, **args)
+    cross_sections[1] = pp.crosssection.make_crosssection(epair_param, **args)
+    cross_sections[2] = pp.crosssection.make_crosssection(ionis_param, **args)
+    cross_sections[3] = pp.crosssection.make_crosssection(photo_param, **args)
+
+    # Propagation utility
+
+    collection = pp.PropagationUtilityCollection()
+
+    collection.interaction = pp.make_interaction(cross_sections, True)
+    collection.displacement = pp.make_displacement(cross_sections, True)
+    collection.time = pp.make_time(cross_sections, mu, True)
+    collection.decay = pp.make_decay(cross_sections, mu, True)
+
+    pp.PropagationUtilityCollection.cont_rand = False
+
+    utility = pp.PropagationUtility(collection=collection)
+
+    # Other settings
+
+    pp.do_exact_time = False
+
+    # Set up geometry
+
+    detector = pp.geometry.Sphere(
+        position=pp.Cartesian3D(0, 0, 0), radius=10000000, inner_radius=0
+    )
+    density_distr = pp.density_distribution.density_homogeneous(
+        mass_density=Prop.rho_ice
+    )
+
+    return pp.Propagator(mu, [(detector, utility, density_distr)])
+
+def proposal_loop(Prop, propagator, N, energy):
+    
+    mu_initial = pp.particle.ParticleState()
+    mu_initial.energy = (energy + Prop.mu_mass) * 1e3 # Muon Total Energy (MeV)
+    mu_initial.position = pp.Cartesian3D(0, 0, 0)
+    mu_initial.direction = pp.Cartesian3D(0, 0, -1)
+
+    slant_depth = Prop.h_bins[-1]/Prop.cosTH[-1]/Prop.rho_ice * 1e2 # convert meters-water-equivalent to cm
+    
+    print ('Running {} Simulations at {:.1e} GeV...'.format(N, energy))
+
+    tracks = [propagator.propagate(mu_initial, slant_depth) for i in tqdm(range(N))]
+    
+    E = np.concatenate([np.array(t.track_energies()) * 1e-3 - Prop.mu_mass for t in tracks]) # convert MeV Total to GeV Kinetic
+    D = np.concatenate([np.array(t.track_propagated_distances()) * Prop.rho_ice * 1e-2 for t in tracks]) # convert cm to m.w.e slant depth
+    
+    counts = np.zeros((len(Prop.cosTH), len(Prop.E_mu), len(Prop.h_bins)), dtype=int)
+    
+    i_depths = np.digitize(D*Prop.cosTH.reshape((-1,1)), Prop.h_bins, right=True)
+    i_energies = np.digitize(E, Prop.E_mu_bins[:-1])-1
+    
+    # Count muons into energy bins for each depth and zenith angle
+    # This method takes advantage of the fact that each track starts at 0 distance traveled
+    # Thus, if the next recorded event occurred at 0 distance, it's from the next track, and so the current one is the last event of this track
+
+    # Loop over each event recorded
+    # We start at -1 because it makes indexing easier
+    for i in tqdm(range(-1, len(D)-1)):
+        if i_energies[i] != -1:
+            for j,d in enumerate(i_depths):
+                if d[i]<d[i+1]:
+                    counts[j, i_energies[i], d[i]:d[i+1] if D[i+1]!=0. else d[i]:] += 1
+                    
+    # multiply by dOmega for each zenith angle and divide by dE for each underground energy
+    return counts/N * Prop.dcosTH.reshape((-1,1,1)) / Prop.dE_mu.reshape((1,-1,1)) * 2 * np.pi
+
+def get_survival_tensor(Prop, N=10**5, E_max=1e3):
+    survival_tensor = np.zeros((2,len(Prop.E_mu),len(Prop.cosTH),len(Prop.E_mu),len(Prop.h_bins)))
+    # axis0 - muon charge
+    # axis1 - muon surface energy
+    # axis2 - zenith angle
+    # axis3 - muon underground energy
+    # axis4 - depth
+    
+    for i,mu_pos in enumerate([True, False]):
+        propagator = get_proposal(Prop, mu_pos)
+        for j,energy in enumerate(Prop.E_mu[Prop.E_mu<E_max]):
+            survival_tensor[i,j] = proposal_loop(Prop, propagator, N, energy)
+    
+    return survival_tensor * Prop.dE_mu.reshape((1,-1,1,1,1))
+
+def proposal_ice(Prop, file='survival_tensor_TEST.npy', new_tensor=False):
+    if Prop is None:
+        return 'atm'
+    
+    if new_tensor:
+        survival_tensor = get_survival_tensor(Prop)
+        
+        if not file is None:
+            np.save(file, survival_tensor)
+    else:
+        survival_tensor = np.load(file)
+    
+    phi_atm = Prop.Phi['atm']
+    
+    PA = phi_atm.swapaxes(1,2).reshape((len(phi_atm),2,-1))
+    ST = survival_tensor.swapaxes(1,3).reshape((2,len(Prop.E_mu),-1,len(Prop.h_bins)))
+    
+    phi_ice = np.moveaxis([PA[:,i] @ S for i,S in enumerate(ST)], 2,0)
+    
+    return phi_ice
+
+"""
 def mute_ice(Prop):
     if Prop is None:
         return ''
@@ -1083,6 +1217,7 @@ def mute_ice(Prop):
     #axis3 - depth (top -> bottom)
     
     return Phi_ice
+"""
 
 def Dyonisius_prod(Prop, sigma_E = None, E_sigma = None, alpha = None, N = None, f_tot = None):
     if Prop is None: # run function with Prop=None to get input stage
@@ -1197,7 +1332,7 @@ def Basic_flow(Prop, f_factors = None, f_t = None, lambd=None):
     return np.moveaxis([np.sum(P_f[:,:i+1]*lambda_dt[:,-i-1:], axis=-1) for i in tqdm(range(np.shape(P_f)[-1]))], 0, -1)
     #return diag_sum(np.expand_dims(np.sum(P_14C[:,:,Prop.i_start:]*np.reshape(f_factors, (1,-1,1)), axis=1), axis=-1) * lambda_dt)
 
-def flow_14C(Prop, f_t = None, lambd=None):
+def flow_14C(Prop, f_t = None, lambd=None, use_tqdm=True):
     if Prop is None: # run function with Prop=None to get input stage
         return 'prod'
     
@@ -1235,8 +1370,239 @@ def flow_14C(Prop, f_t = None, lambd=None):
 
     lambda_dt = np.reshape((1-lambd)**(Prop.t[-1]-Prop.t[Prop.i_start:]) * Prop.dt[Prop.i_start:] * f_t, (1,1,-1))
     
-    return np.moveaxis([np.sum(P_14C[:,:,:i+1]*lambda_dt[:,:,-i-1:], axis=-1) for i in tqdm(range(np.shape(P_14C)[-1]))], 0, -1)
+    return np.moveaxis([np.sum(P_14C[:,:,:i+1]*lambda_dt[:,:,-i-1:], axis=-1) for i in (tqdm(range(np.shape(P_14C)[-1])) if use_tqdm else range(np.shape(P_14C)[-1]))], 0, -1)
     #return diag_sum(np.expand_dims(P_14C[:,:,Prop.i_start:], axis=-1) * lambda_dt)
+    
+def flow_14C_response(Prop, lambd=None):
+    if Prop is None: # run function with Prop=None to get input stage
+        return 'prod'
+    
+    if lambd is None:
+        lambd = Prop.lambd
+
+    # Shift past 14CO down and decay
+    # (AKA multiply by survival fraction and sum along upper diagonal)
+    
+    P_14C = np.copy(Prop.Phi['prod'])[:,:,Prop.i_start:]
+    #P_14C - 14C Production Rate
+    #axis0 - Production Model
+    #axis1 - Production Mode (fast, neg)
+    #axis2 - depth (top -> bottom)
+
+    C_response = np.zeros((*np.shape(P_14C),np.shape(P_14C)[-1]))
+    #axis0 - Production Model
+    #axis1 - Production Mode (fast, neg)
+    #axis2 - Time (past -> present)
+    #axis3 - depth (top -> bottom)
+    
+    for i in range(len(Prop.t[Prop.i_start:])):
+        C_response[:,:,i,-i-1:] = P_14C[:,:,:i+1]
+    
+    return C_response * np.reshape(np.exp(-lambd*(Prop.t_bins[-1]-Prop.t[Prop.i_start:])) * Prop.dt[Prop.i_start:], (1,1,-1,1))
+    #return diag_sum(np.expand_dims(P_14C[:,:,Prop.i_start:], axis=-1) * lambda_dt)
+
+# Reproducition of 14C analysis at Taylor Glacier, Antarctica by Dyonisius et al. (2023)
+# https://tc.copernicus.org/articles/17/843/2023/
+def Taylor_flow(
+    Prop, # Propagator object, contains data from calculation of production rates
+    flow='trim', # flowpaths to use ('sample', 'all', or 'trim')
+    f_t=None, # muon flux scaling factor over time
+    lambd=None # 14C decay constant (default = 1.216e-4 yr^-1)
+):
+    if Prop is None: # run function with Prop=None to get input stage
+        return 'prod'
+    if lambd is None:
+        lambd = Prop.lambd
+        
+    z_P = Prop.z_bins
+    
+    P_14C = interp1d(Prop.z, Prop.Phi['prod'], bounds_error=False, assume_sorted=True)(z_P)
+    #P_14C - 14C Production Rates [molecules /g /yr]
+    #axis0 - Production Model
+    #axis1 - Production Mode (fast, neg)
+    #axis2 - depth (top -> bottom)
+    
+    if flow=='best' or flow=='sample':
+        flowpath = loadmat('matlab/MC_14CO_mod/flowpath_sample.mat')
+        h_age = flowpath['h_age']
+    elif flow=='all':
+        flowpath = loadmat('matlab/MC_14CO_mod/flowpath_all.mat')
+        h_age = flowpath['h_age']
+    else:
+        flowpath = loadmat('matlab/MC_14CO_mod/flowpath_trim.mat')
+        h_age = np.swapaxes(flowpath['h_trim'], 1,2)
+    # h_age : ice parcel depth as a function of age [m]
+    #axis0 - sample depth
+    #axis1 - flowpath
+    #axis2 - ice parcel age
+    
+    age = flowpath['age'][0]
+    # age : ice parcel ages [years]
+    #axis0 - ice parcel age
+    
+    z_baseline = -699.3415
+    z_init = 575. - (h_age[:,:,-1] - z_baseline)
+    
+    dt = 0.5
+    t = np.arange(age[0], age[-1], dt) # time integration steps
+    
+    if f_t is None:
+        f_t = np.ones(len(t))
+    
+    parcel_depth = np.flip(interp1d(age, h_age, assume_sorted=True)(t+dt)*-1., axis=-1)
+    # parcel_depth : depth of parcel over integration time [m]
+    # axis0 - sample depth
+    # axis1 - flowpath
+    # axis2 - integration time (= flip(age))
+    
+    # interpolator function for Production Rates vs depth
+    P_interp = interp1d(z_P, P_14C, assume_sorted=True)
+    
+    C = P_interp(z_init)/lambd # equilibrium 14CO concentration at starting depth
+    
+    # integrate
+    for i in tqdm(range(len(t))):
+        C += (P_interp(parcel_depth[:,:,i])*f_t[i] - C*lambd)*dt
+    
+    C = np.moveaxis(C, -1,0)
+    # C : final 14CO concentration at sample depth [molecules /g]
+    #axis0 - flowpath
+    #axis1 - Production Model
+    #axis2 - Production Mode (fast, neg)
+    #axis3 - sample depth
+    
+    return C
+
+def Taylor_flow_response(
+    Prop, # Propagator object, contains data from calculation of production rates
+    flow='trim', # flowpaths to use ('sample', 'all', or 'trim')
+    f_t=None, # muon flux scaling factor over time
+    lambd=None # 14C decay constant (default = 1.216e-4 yr^-1)
+):
+    if Prop is None: # run function with Prop=None to get input stage
+        return 'prod'
+    
+    if lambd is None:
+        lambd = Prop.lambd
+        
+    z_P = Prop.z
+    
+    P_14C = np.copy(Prop.Phi['prod'])
+    #P_14C - 14C Production Rates [molecules /g /yr]
+    #axis0 - Production Model
+    #axis1 - Production Mode (fast, neg)
+    #axis2 - depth (top -> bottom)
+    
+    if flow=='best' or flow=='sample':
+        flowpath = loadmat('matlab/MC_14CO_mod/flowpath_sample.mat')
+        h_age = flowpath['h_age']
+    elif flow=='all':
+        flowpath = loadmat('matlab/MC_14CO_mod/flowpath_all.mat')
+        h_age = flowpath['h_age']
+    else:
+        flowpath = loadmat('matlab/MC_14CO_mod/flowpath_trim.mat')
+        h_age = np.swapaxes(flowpath['h_trim'], 1,2)
+    # h_age : ice parcel depth as a function of age [m]
+    #axis0 - sample depth
+    #axis1 - flowpath
+    #axis2 - ice parcel age
+    
+    age = flowpath['age'][0]
+    # age : ice parcel ages [years]
+    #axis0 - ice parcel age
+    
+    z_baseline = -699.3415
+    z_init = 575. - (h_age[:,:,-1] - z_baseline)
+    
+    dt = 0.5
+    t_bins = np.arange(age[0], age[-1]+dt, dt) # time integration steps
+    t = (t_bins[:-1]+t_bins[1:])/2
+    
+    if f_t is None:
+        f_t = np.ones(len(t))
+    
+    parcel_depth = np.flip(interp1d(age, h_age, assume_sorted=True)(t)*-1., axis=-1)
+    # parcel_depth : depth of parcel over integration time [m]
+    # axis0 - sample depth
+    # axis1 - flowpath
+    # axis2 - integration time
+    
+    # interpolator function for Production Rates vs depth
+    P_interp = interp1d(z_P, P_14C, assume_sorted=True)
+    
+    # equilibrium 14CO concentration at starting depth
+    C_init = np.moveaxis(P_interp(z_init)/lambd * np.exp(-lambd*(t_bins[-1]-t_bins[0])), -1, 0)
+    # C : final 14CO concentration at sample depth [molecules /g]
+    #axis0 - flowpath
+    #axis1 - Production Model
+    #axis2 - Production Mode (fast, neg)
+    #axis3 - sample depth
+    
+    # response matrix
+    C_response = np.moveaxis(P_interp(parcel_depth) * (np.exp(-lambd*(t_bins[-1]-t)) * f_t * dt).reshape((1,1,1,1,-1)), (-2, -1), (0, -2))
+    #axis0 - flowpath
+    #axis1 - Production Model
+    #axis2 - Production Mode (fast, neg)
+    #axis3 - integration time
+    #axis4 - sample depth
+    
+    return C_response, C_init
+
+"""
+def general_flow(
+    Prop,
+    age = None,
+    h_age = None,
+    z_init = None,
+    f_t = None,
+    lambd = None
+):
+    if Prop is None: # run function with Prop=None to get input stage
+        return 'prod'
+    
+    if age is None:
+        age = Prop.t_bins
+    if h_age is None:
+        h_age = Prop.z_bins
+    if f_t is None:
+        f_t = np.ones(len(age))
+    if lambd is None:
+        lambd = Prop.lambd
+    
+    # time integration steps
+    t_bins = Prop.t_bins
+    t = Prop.t
+    dt = Prop.dt
+    
+    age_end = interp1d(h_age, age)(z_init)
+    age_int = # age = age_end-
+    
+    parcel_depth = interp1d(age, h_age, assume_sorted=True)(age_int)
+    # parcel_depth : depth of parcel over integration time [m]
+    # axis0 - sample depth
+    # axis1 - flowpath
+    # axis2 - integration time (= flip(age))
+    
+    # interpolator function for Production Rates vs depth
+    P_interp = interp1d(z_P, P_14C, assume_sorted=True)
+    
+    if z_init = None:
+        C = 0.
+    else:
+        C = P_interp(z_init)/lambd # equilibrium 14CO concentration at starting depth
+    
+    # integrate
+    for i in tqdm(range(len(t))):
+        C += (P_interp(parcel_depth[:,:,i]) - C*lambd)*dt
+    
+    C = np.moveaxis(C, -1,0)
+    # C : final 14CO concentration at sample depth [molecules /g]
+    #axis0 - Production Model
+    #axis1 - Production Mode (fast, neg)
+    #axis2 - sample depth
+    
+    return C
+"""
     
 def load_prod(Prop, fast_file='Production Rates/P_fast_0m.csv', neg_file='Production Rates/P_neg_0m.csv'):
     if Prop is None:

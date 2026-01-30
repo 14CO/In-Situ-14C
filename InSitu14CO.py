@@ -285,7 +285,7 @@ class Propagator:
         Dictionary of functions to be run and their parameters, indexed by a name
         primary CR flux -> 14CO profile
     """
-    def __init__(self, pressure = 65800, elev=3120, rho_ice = 0.9239, f_factors = [0.072, 0.066], ice_eq_depth_file = 'Real_vs_ice_eq_depth.csv', age_scale_file = 'DomeC_age_scale_Apr2023.csv', z_min = 0, z_deep = 300, z_start = 96.5, sample_depths = (100.,301.,20.), N_ang = 10, logE_min = -1, logE_max = 11, logE_mu_max = 7, dlogE = 0.1, rel_err=0.02):
+    def __init__(self, pressure = 65800, elev=3233, rho_ice = 0.9239, f_factors = [0.072, 0.066], ice_eq_depth_file = 'Real_vs_ice_eq_depth.csv', age_scale_file = 'DomeC_age_scale_Apr2023.csv', z_min = 0, z_deep = 300, z_start = 96.5, sample_depths = (100.,301.,20.), N_ang = 10, logE_min = -1, logE_max = 11, logE_mu_max = 7.5, dlogE = 0.1, rel_err=0.02):
         """
         
         Parameters
@@ -360,8 +360,11 @@ class Propagator:
         
         self.setup_mceq(elev)
         
+        # Muon mass
+        self.mu_mass = 1.056583745e-1 # GeV
+        
         # 14C Decay parameter
-        self.lambd = 1.21e-4 #yr^-1
+        self.lambd = 1.216e-4 #yr^-1
         
         # default relative uncertainty in 14CO measurements
         self.rel_err = rel_err
@@ -1185,7 +1188,7 @@ class Propagator:
         chi2 = (T(x)@Sigma_inv@x)[:,0,0]
         
         # Convert to log_likelihood
-        logL = -chi2/2 - np.log(2*np.pi*np.linalg.det(Sigma))/2
+        logL = -chi2/2 - np.log(np.linalg.det(2*np.pi*Sigma))/2
         
         # Convert to p-value
         # (using chi_square to calculate, becauSe I can't think how to convert log_likelihood off the top of my head)
@@ -1230,7 +1233,7 @@ class Propagator:
     
     def save_prod_to_csv(self, tag=''):
         if tag != '':
-            tag += '_'
+            tag = '_'+tag
             
         """
         
@@ -1251,10 +1254,10 @@ class Propagator:
             
         df_fast = pd.DataFrame(P_fast)
         df_neg = pd.DataFrame(P_neg)
-        df_fast.to_csv('Production Rates/P_fast_{}m{}.csv'.format(self.elev, tag), index=False)
-        print('Saved to:  Production Rates/P_fast_{}m{}.csv'.format(self.elev, tag))
-        df_neg.to_csv('Production Rates/P_neg_{}m{}.csv'.format(self.elev, tag), index=False)
-        print('Saved to:  Production Rates/P_neg_{}m{}.csv'.format(self.elev, tag))
+        df_fast.to_csv('Production Rates/P_fast{}_{}m.csv'.format(tag, self.elev), index=False)
+        print('Saved to:  Production Rates/P_fast{}_{}m.csv'.format(tag, self.elev))
+        df_neg.to_csv('Production Rates/P_neg{}_{}m.csv'.format(tag, self.elev), index=False)
+        print('Saved to:  Production Rates/P_neg{}_{}m.csv'.format(tag, self.elev))
         
         return
     
