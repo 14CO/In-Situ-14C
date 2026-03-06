@@ -17,6 +17,7 @@ import proposal as pp
 
 from scipy.interpolate import interp1d
 from scipy.io import loadmat
+from scipy import stats
 
 #import mute.constants as mtc
 #import mute.underground as mtu
@@ -1476,7 +1477,7 @@ def Taylor_flow(
 def Taylor_flow_response(
     Prop, # Propagator object, contains data from calculation of production rates
     flow='trim', # flowpaths to use ('sample', 'all', or 'trim')
-    f_t=None, # muon flux scaling factor over time
+    t_bins=None,
     lambd=None # 14C decay constant (default = 1.216e-4 yr^-1)
 ):
     if Prop is None: # run function with Prop=None to get input stage
@@ -1514,14 +1515,14 @@ def Taylor_flow_response(
     z_baseline = -699.3415
     z_init = 575. - (h_age[:,:,-1] - z_baseline)
     
-    dt = 0.5
-    t_bins = np.arange(age[0], age[-1]+dt, dt) # time integration steps
+    if t_bins is None:
+        dt = 0.5
+        t_bins = -np.flip(np.arange(0, age[-1]-age[0]+dt, dt)) # time integration steps (from -t_width (past) to 0 (present))
     t = (t_bins[:-1]+t_bins[1:])/2
+    dt = np.diff(t_bins)
     
-    if f_t is None:
-        f_t = np.ones(len(t))
-    
-    parcel_depth = np.flip(interp1d(age, h_age, assume_sorted=True)(t)*-1., axis=-1)
+    #parcel_depth = np.flip(interp1d(age, h_age, assume_sorted=True)(-t)*-1., axis=-1)
+    parcel_depth = interp1d(age, h_age, assume_sorted=True, fill_value=(h_age[:,:,0], h_age[:,:,-1]), bounds_error=False)(-t)*-1.
     # parcel_depth : depth of parcel over integration time [m]
     # axis0 - sample depth
     # axis1 - flowpath
@@ -1539,7 +1540,7 @@ def Taylor_flow_response(
     #axis3 - sample depth
     
     # response matrix
-    C_response = np.moveaxis(P_interp(parcel_depth) * (np.exp(-lambd*(t_bins[-1]-t)) * f_t * dt).reshape((1,1,1,1,-1)), (-2, -1), (0, -2))
+    C_response = np.moveaxis(P_interp(parcel_depth) * (np.exp(-lambd*(t_bins[-1]-t)) * dt).reshape((1,1,1,1,-1)), (-2, -1), (0, -2))
     #axis0 - flowpath
     #axis1 - Production Model
     #axis2 - Production Mode (fast, neg)
@@ -1638,3 +1639,98 @@ def load_profile(Prop, file='balco_14co_const_models.fits', i=68):
 
     hdus = fits.open(file)
     return np.reshape(hdus['CO14'].data[i][1:], (1,-1))
+    
+def calc_gauss_pred(Prop, c_samp = None, c_weights=None, output=False):
+    if c_samp is None:
+        if Prop.c_samp is None: # calculate the predicted 14CO samples if it hasn't been done already
+            c_samp = Prop.Phi['CO']@Prop.S_mat[Prop.i_start:]
+        else:
+            c_samp = Prop.c_samp
+    if c_weights is None:
+        if Prop.c_weights is None: # if weights haven't been provided, assume all models are equal
+            c_weights = np.ones(len(c_samp))
+        elif len(Prop.c_weights)==len(c_samp): # if weights have already been used and fit the number of models here, use them
+            c_weights = Prop.c_weights
+        else: # if all else fails, assume all models are equal
+            c_weights = np.ones(len(c_samp))
+
+    # 14CO sample predictions for each model
+    Prop.c_samp = c_samp
+
+    # relative weight of each model
+    Prop.c_weights = c_weights
+
+    # average of the 14CO predictions
+    Prop.c_pred = np.average(c_samp, weights=c_weights, axis=0)
+
+    # covariance matrix for the 14CO predictions
+    Prop.cov_pred = np.cov(c_samp, aweights=c_weights, rowvar=False)
+
+    if output:
+        return Prop.c_pred, Prop.cov_pred
+    return
+
+def get_samples(Prop, N=1, c_pred=None, cov_pred=None, rel_err=None):
+    if c_pred is None:
+        if Prop.c_pred is None:
+            Prop.calc_gauss_pred()
+        c_pred = Prop.c_pred
+    if cov_pred is None:
+        if Prop.cov_pred is None:
+            Prop.calc_gauss_pred()
+        cov_pred = Prop.cov_pred
+    if rel_err is None:
+        rel_err = Prop.rel_err
+
+    # generate random 14CO predictions
+    c = np.random.multivariate_normal(c_pred, cov_pred, N)
+
+    # generate random relative experimental errors
+    s = np.random.normal(1., rel_err, (N,len(c_pred)))
+
+    # return simulated 14CO samples w/ experimental error
+    return c*s, c*s * rel_err
+
+def log_likelihood(Prop, c, c_err=None, c_pred=None, cov_pred=None):
+    N_samp = len(Prop.z_samp)
+
+    c = np.reshape(c, (-1,N_samp))
+    if c_err is None:
+        c_err = c * Prop.rel_err
+    else:
+        c_err = np.reshape(c_err, np.shape(c))
+    if c_pred is None:
+        c_pred = Prop.c_pred
+    c_pred = np.reshape(c_pred, (1,N_samp))
+    if cov_pred is None:
+        cov_pred = Prop.cov_pred
+
+    # Calculate total systematic uncertainty
+    # Sigma = cov_pred + np.diag(c_err**2)
+    # I can't find a quick way to diagonalize axis1 into axis 1&2 while preserving axis0
+    Sigma = np.reshape(cov_pred, (1,N_samp,N_samp)) * np.ones((len(c_err),1,1))
+    for i in range(N_samp): # add experimental variance along diagonal
+        Sigma[:,i,i] += c_err[:,i]**2
+    Sigma_inv = np.linalg.inv(Sigma)
+
+    # difference between measurements and prediction
+    x = (c-np.reshape(c_pred, (1,N_samp))).reshape((-1,N_samp,1))
+
+    # Calculate chi-square
+    chi2 = (T(x)@Sigma_inv@x)[:,0,0]
+
+    # Convert to log_likelihood
+    logL = -chi2/2 - np.log(np.linalg.det(2*np.pi*Sigma))/2
+
+    # Convert to p-value
+    # (using chi_square to calculate, becauSe I can't think how to convert log_likelihood off the top of my head)
+    p = stats.chi2.sf(chi2, N_samp)
+
+    # Convert to # of standard deviations
+    sig = stats.norm.isf(p/2.)
+
+    return logL, p, sig
+
+def get_sensitivity(Prop, f_var='linear', error=0.02, amp=None, a_weights=None, P_14C=None, p_weights=None, f_file='factors_2sigma_hull.csv', Pres_conv=True, Normalize=True, Gauss_prod=True, Gauss_f=True, Int_f_all=True, Sample_f=True):
+
+    return

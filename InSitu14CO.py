@@ -2,31 +2,24 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-#from abc import ABC
-
-import os.path
+#import os.path
 
 from MCEq.core import MCEqRun
-#import mceq_config as config
 from MCEq import config
 import crflux.models as pm
 
 from tqdm import tqdm
 
-#from scipy.sparse import find
-
 import pandas as pd
-from MCEq.geometry.density_profiles import GeneralizedTarget
+#from MCEq.geometry.density_profiles import GeneralizedTarget
 
-import matplotlib as mpl
+#import matplotlib as mpl
 #from cycler import cycler
-from astropy.io import fits
-
-import daemonflux
+#from astropy.io import fits
 
 import Functions_14CO as F
 
-from scipy import stats
+#from scipy import stats
 
 # could split this into:
 # Sites
@@ -37,6 +30,22 @@ from scipy import stats
 
 def T(A):
     return np.swapaxes(A, -1,-2)
+
+def argnear_below(x, a): 
+    # returns the index of the nearest value to x in the array a
+    # such that a[i] <= x
+    # assuming a is sorted low -> high
+
+    # works by interpolating the inverse function of a[i]
+    return max(min(int(np.interp(x, a, np.arange(len(a)))), len(a)-1), 0)
+
+def argnear_above(x, a): 
+    # returns the index of the nearest value to x in the array a
+    # such that a[i] >= x
+    # assuming a is sorted low -> high
+
+    # works by interpolating the inverse function of a[i]
+    return max(min(int(np.interp(x, a, np.arange(len(a))))+1, len(a)-1), 0)
 
 class ModelStep:
 
@@ -109,232 +118,197 @@ class Dataset:
         self.name = name
         # plotting format?
 
-# class Site:
+
 class Propagator:
     """
     Class for propagating primary cosmic rays to atmospheric muons, underground muons, in-situ 14C production rates, and 14CO profiles
     
     Instance Variables
     --------------------
-    self.z_bins - numpy array, shape (#z+1), dtype float
+    
+    Grid Values
+    ---------------------------------------------------
+    self.z_bins : numpy array, shape (#z+1), dtype float
         depth bin edges [m]
         Ranges from z_min to z_deep
-    self.z - numpy array, shape (#z), dtype float
+    self.z : numpy array, shape (#z), dtype float
         depth bin centers [m]
         z = (z_bins[:-1] + z_bins[1:])/2
-    self.dz - numpy array, shape (#z), dtype float
+    self.dz : numpy array, shape (#z), dtype float
         depth bin widths [m]
         dz = np.diff(z_bins)
-        
-    self.rho_ice - float
-        Density of solid ice [g/cm^3]
     
-    self.h_bins - numpy array, shape (#z+1), dtype float
+    self.h_bins : numpy array, shape (#z+1), dtype float
         mass depth bin edges [meters-water-equivalent (m.w.e.) = hg/cm^2]
         corresponds to z_bins
-    self.h - numpy array, shape (#z), dtype float
+    self.h : numpy array, shape (#z), dtype float
         mass depth bin centers [meters-water-equivalent (m.w.e.) = hg/cm^2]
         h = (h_bins[:-1] + h_bins[1:])/2
-    self.dh - numpy array, shape (#z), dtype float
+    self.dh : numpy array, shape (#z), dtype float
         mass depth bin widths [meters-water-equivalent (m.w.e.) = hg/cm^2]
         dh = np.diff(h_bins)
     
-    self.t_bins - numpy array, shape (#z+1), dtype float
+    self.t_bins : numpy array, shape (#z+1), dtype float
         ice age bin edges [years]
         corresponds to z_bins
-    self.t - numpy array, shape (#z), dtype float
+    self.t : numpy array, shape (#z), dtype float
         ice age bin centers [years]
         t = (t_bins[:-1] + t_bins[1:])/2
-    self.dt - numpy array, shape (#z), dtype float
+    self.dt : numpy array, shape (#z), dtype float
         ice age bin widths [years]
         dt = np.diff(t_bins)
         
-    self.z_samp_bins - numpy array, shape (#samp+1), dtype float
+    self.z_samp_bins : numpy array, shape (#samp+1), dtype float
         sample depth bin edges [m]
-    self.z_samp - numpy array, shape (#samp), dtype float
+    self.z_samp : numpy array, shape (#samp), dtype float
         sample depth bin centers [m]
-    self.dz_samp - numpy array, shape (#samp), dtype float
+    self.dz_samp : numpy array, shape (#samp), dtype float
         sample depth bin widths [m]
         
-    self.S_mat = numpy array, shape (#z, #samp), dtype float
+    self.S_mat : numpy array, shape (#z, #samp), dtype float
         Matrix averaging over the depth bins in a core sample [unitless]
         Given an array A whose final axis ranges over depth,
         A_samp = A @ S_mat
         Where A_samp lists the average value of A in each core sample.
-    self.i_start - int
-        depth index where sampling starts [unitless]
+    self.i_start : int
+        depth index where 14CO accumulation starts [unitless]
     
-    self.cosTH_bins - numpy array, shape (#cosTH+1), dtype float
+    self.cosTH_bins : numpy array, shape (#cosTH+1), dtype float
         cosine zenith angle bin edges [unitless]
         Ranges from 1. to 0.
-    self.cosTH - numpy array, shape (#cosTH), dtype float
+    self.cosTH : numpy array, shape (#cosTH), dtype float
         cosine zenith angle bin centers [unitless]
         cosTH = (cosTH_bins[:-1] + cosTH_bins[1:])/2
-    self.dcosTH - numpy array, shape (#cosTH), dtype float
+    self.dcosTH : numpy array, shape (#cosTH), dtype float
         cosine zenith angle bin widths [unitless]
         dcosTH = np.diff(cosTH_bins)
-        
-    self.logE_bins - numpy array, shape (#E+1), dtype float
-        log10 of particle energy bin edges [log10 GeV]
-        Ranges from -1. to 11. by default
-    self.logE - numpy array, shape (#E), dtype float
-        log10 of particle energy bin centers [log10 GeV]
-        logE = (logE_bins[:-1] + logE_bins[1:])/2
-    self.dlogE - numpy array, shape (#E), dtype float
-        log10 of particle energy bin widths [log10 GeV]
-        dlogE = np.diff(dlogE_bins)
     
-    self.E_bins - numpy array, shape (#E+1), dtype float
+    self.E_bins : numpy array, shape (#E+1), dtype float
         particle energy bin edges [GeV]
         E_bins = 10.**logE_bins
-    self.E - numpy array, shape (#E), dtype float
+    self.E : numpy array, shape (#E), dtype float
         particle energy bin centers [GeV]
         E = 10.**logE
-    self.dE - numpy array, shape (#E), dtype float
+    self.dE : numpy array, shape (#E), dtype float
         particle energy bin widths [GeV]
         dE = np.diff(E_bins)
         
-    self.pressure - float
+    Muon Propagation Parameters
+    ------------------------------------------------------
+    self.rho_ice : float
+        Density of solid ice [g/cm^3]
+        
+    self.pressure : float
         atmospheric pressure at site [Pa]
         used to calculate H in Balco
-    self.H - float
+    self.H : float
         atmospheric depth above sea level [m.w.e. = hg/cm^2]
         H = (1013.25 - pressure/100)*1.019716
         
-    self.h_range - numpy array, shape (30), dtype float
+    self.h_range : numpy array, shape (30), dtype float
         Lithospheric depth corresponding to momentum array [g/cm^2]
-    self.momentum - numpy array, shape (30), dtype float
+    self.momentum : numpy array, shape (30), dtype float
         Average momentum of muons at depth [GeV/c]
         Used for atmospheric attenuation length calculation in Balco
         From a table for muons in standard rock in Groom and others 2001
         
-    self.a - float
+    self.a : float
         energy loss due to ionization [GeV cm^2/hg]
-    self.b - float
+    self.b : float
         sum of fractional radiation losses in solid rock [cm^2/hg]
         value averaged from Gaisser-Stanev table
         for ~30GeV muons (see Heisinger)
-    self.b_ice - float
+    self.b_ice : float
         sum of fractional radiation losses in ice [cm^2/hg]
         value averaged from Gaisser-Stanev table
         for ~30GeV muons
     
-    self.elev - float or int
+    self.elev : float or int
         elevation above sea level [m]
         For use in MCEq atmospheric profile
-    self.mceq - MCEqRun object
+    self.mceq : MCEqRun object
         dummy MCEq instance to get info from
         
-    self.sigma_E - float
+   
+    14CO Production Parameters
+    ------------------------------------------------------
+    self.sigma_E : float
         fast muon interaction cross section measurement [cm^2]
         default value = 4.5e-28
         (see Heisinger)
-    self.E_sigma - float
+    self.E_sigma : float
         energy of cross section measurement [GeV]
         default value = 190.
-    self.alpha - float
+    self.alpha : float
         cross section energy scaling factor [unitless]
         sigma(E) = sigma_0 * E**alpha
         default value = 0.75
-    self.sigma_0 - float
+    self.sigma_0 : float
         fast muon interaction cross section at 1 GeV [cm^2]
         sigma_0 = sigma_E / E_sigma**alpha
-    self.N - float
+    self.N : float
         density of fast muon interaction targets (oxygen nucleii) [hg^-1]
         #oxgyen nucleii per molecule (1) / molecular mass (0.1802 / 6.022e23)
-    self.f_tot - float
+    self.f_tot : float
         effective probability of 14C production by capture of a stopped negative muon [unitless]
         f_tot = f_C * f_D * f_star
-        f_C - 
-        f_D - 
-        f_star - 
+            f_C : 
+            f_D : 
+            f_star : 
         
-    self.f_factors - numpy array, shape (2), dtype float
+    self.f_factors : numpy array, shape (2), dtype float
         coefficients scaling 14CO production via fast and negative muon interactions [unitless]
         f_factors = [f_fast, f_neg]
         
-    self.lambd - float
+    self.lambd : float
         14C annual loss to radioactive decay [year^-1]
         default value = 1.21e-4
         14C_end = 14C_start * (1-lambd)**Delta_t
     
-    self.p_models - list of tuples, shape [(), ...]
-        
-    self.p_names - list of strings
-        
     
-    self.atm - dictionary, shape {'name':(function, (param_1, param_2, param_3,...)), ...}
-        Dictionary of functions to be run and their parameters, indexed by a name
-        primary CR flux -> atmospheric muon flux
-    self.ice - dictionary, shape {'name':(function, (param_1, param_2, param_3,...)), ...}
-        Dictionary of functions to be run and their parameters, indexed by a name
-        atmospheric muon flux -> muon flux underground (underice)
-    self.atmice - dictionary, shape {'name':(function, (param_1, param_2, param_3,...)), ...}
-        Dictionary of functions to be run and their parameters, indexed by a name
-        primary CR flux -> muon flux underground (underice)
-    self.prod - dictionary, shape {'name':(function, (param_1, param_2, param_3,...)), ...}
-        Dictionary of functions to be run and their parameters, indexed by a name
-        muon flux underground (underice) -> 14C production rates
-    self.prodfull - dictionary, shape {'name':(function, (param_1, param_2, param_3,...)), ...}
-        Dictionary of functions to be run and their parameters, indexed by a name
-        primary CR flux -> 14C production rates
-    self.flow - dictionary, shape {'name':(function, (param_1, param_2, param_3,...)), ...}
-        Dictionary of functions to be run and their parameters, indexed by a name
-        14C production rates -> 14CO profile
-    self.flowfull - dictionary, shape {'name':(function, (param_1, param_2, param_3,...)), ...}
-        Dictionary of functions to be run and their parameters, indexed by a name
-        primary CR flux -> 14CO profile
-    """
-    def __init__(self, pressure = 65800, elev=3233, rho_ice = 0.9239, f_factors = [0.072, 0.066], ice_eq_depth_file = 'Real_vs_ice_eq_depth.csv', age_scale_file = 'DomeC_age_scale_Apr2023.csv', z_min = 0, z_deep = 300, z_start = 96.5, sample_depths = (100.,301.,20.), N_ang = 10, logE_min = -1, logE_max = 11, logE_mu_max = 7.5, dlogE = 0.1, rel_err=0.02):
-        """
+    Production Models
+    -------------------------------------------------------------------
+    self.stages : list of strings
         
-        Parameters
-        ------------------
-        pressure - int or float
-            atmospheric pressure at site [Pa]
-            Used in Balco elevation adjustment for Heisinger calculation
-        elev - int or float
-            Elevation above sea level [m]
-            Used in Matlab atmospheric calculation
-        rho_ice - float
-            Density of solid ice [g/cm^3]
-            Used to convert ice-equivalent depth to water-equivalent
-        f_factors - list of two floats
-            coefficients scaling 14CO production via fast and negative muon interactions [unitless]
-            f_factors = [f_fast, f_neg]
-        ice_eq_depth_file - string
-            .csv table converting real depths to ice-equivalent depths
-            (Ice-equivalent depth is defined as the mass per square centimeter above that depth, divided by the density of ice)
-            Columns:
-                z - real depth [m]
-                ice_eq_depth - corresponding ice-equivalent depth [meters-ice-eq]
-        age_scale_file - string
-            .csv table converting depth to ice age
-            Columns:
-                depths_real - depth of ice [m]
-                ages - age of ice [years]
-        z_min - int or float
-            Minimum depth of density profile [m]
-            (Should always be 0?)
-        z_start - int or float
-            Depth at which sampling starts [m]
-        z_deep - int or float
-            Maximum depth of calculation [m]
-        sample_depths : tuple or array-like of int or float
-            tuple : parameters for numpy.arange to define a 1D array of sample bin edges
-            1D array : sample bin edges, connected
-            2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
-            units: depth [m]
-        N_ang - int
-            Number of zenith angle bins [unitless]
-            zenith angle bins are equally spaced in solid angle
-        logE_min - int or float
-            log base 10 of the minimum tracked particle energy [log10 GeV]
-        logE_max - int or float
-            log base 10 of the maximum tracked particle energy [log10 GeV]
-        dlogE - int or float
-            Width of particle energy bins in log base 10 [log10 GeV]
-        """
+            'primary' : 
+            'atm' : 
+            'ice' : 
+            'prod' : 
+            'CO' : 
+    
+    self.Phi : dict of numpy arrays
+    
+    self.models : dict of ModelSteps
+    
+    self.model_names : dict of lists of strings
+    
+    """
+    def __init__(self,
+                 pressure = 65800, # atmospheric pressure at site [Pa], used in Balco elevation adjustment for Heisinger calculation
+                 elev=3233, #Elevation above sea level [m]
+                 rho_ice = 0.9239, # Density of solid ice [g/cm^3]
+                 f_factors = [0.072, 0.066], #coefficients scaling 14CO production via fast (f_fast) and negative (f_neg) muon interactions [unitless]
+                 ice_eq_depth_file = 'Real_vs_ice_eq_depth.csv', #.csv table converting real depths to ice-equivalent depths
+                    #(Ice-equivalent depth is defined as the mass per square centimeter above that depth, divided by the density of ice)
+                    #Columns:
+                        #z - real depth [m]
+                        #ice_eq_depth - corresponding ice-equivalent depth [meters-ice-eq]
+                 age_scale_file = 'DomeC_age_scale_Apr2023.csv', #.csv table converting depth to ice age
+                    #Columns:
+                        #depths_real - depth of ice [m]
+                        #ages - age of ice [years]
+                 z_min = 0, # Minimum depth of density profile [m] (Should always be 0?)
+                 z_start = 96.5, #Depth at which 14CO accumulation starts [m]
+                 z_deep = 300, #Maximum depth of calculation [m]
+                 sample_depths = (100.,301.,20.), # depths defining sample bins [m]
+                 #tuple : parameters for numpy.arange to define a 1D array of sample bin edges
+                #1D array : sample bin edges, connected
+                #2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
+                 N_ang = 10, # Number of zenith angle bins [unitless] (zenith angle bins are equally spaced in solid angle)
+                 logE_min = -1, #log base 10 of the minimum tracked particle energy [log10 GeV]
+                 logE_max = 11, #log base 10 of the maximum tracked particle energy [log10 GeV]
+                 logE_mu_max = 7.5, #log base 10 of the maximum tracked  MUON energy [log10 GeV]
+                ):
         
         # load in depth, mass depth, and time bins (default location - Dome C, Antarctica)
         self.load_ice_profile(ice_eq_depth_file, age_scale_file, rho_ice, z_min, z_deep, z_start, sample_depths)
@@ -343,7 +317,7 @@ class Propagator:
         self.set_zenith_bins(N_ang)
         
         # set energy bins (default 120 equally space between logE = 1e-1 and 1e11)
-        self.set_energy_bins(logE_min, logE_max, logE_mu_max, dlogE)
+        self.set_energy_bins(logE_min, logE_max, logE_mu_max, 0.1)
         
         # set pressure used in Balco calculation (default = 65800 Pa for Dome C, Antarctica)
         self.set_pressure(pressure)
@@ -366,23 +340,6 @@ class Propagator:
         # 14C Decay parameter
         self.lambd = 1.216e-4 #yr^-1
         
-        # default relative uncertainty in 14CO measurements
-        self.rel_err = rel_err
-        
-        self.c_samp = None
-        self.c_weights = None
-        self.c_pred = None
-        self.cov_pred = None
-            
-        self.p_models = [(pm.GlobalSplineFitBeta, None), (pm.HillasGaisser2012, "H3a"), (pm.HillasGaisser2012, "H4a"), (pm.PolyGonato, False),
-                   (pm.GaisserStanevTilav, "3-gen"), (pm.GaisserStanevTilav, "4-gen"), (pm.CombinedGHandHG, "H3a"),
-                   (pm.ZatsepinSokolskaya, "pamela"), (pm.ZatsepinSokolskaya, "default"), (pm.GaisserHonda, None),
-                   (pm.Thunman, None), (pm.SimplePowerlaw27, None)]
-        self.p_names = ['GlobalSplineFitBeta', 'HillasGaisser2012 H3a', 'HillasGaisser2012 H4a', 'PolyGonato',
-                      'GaisserStanevTilav 3-gen', 'GaisserStanevTilav 4-gen', 'CombinedGHandHG H3a',
-                      'ZatsepinSokolskaya pamela', 'ZatsepinSokolskaya default', 'GaisserHonda',
-                      'Thunman', 'SimplePowerlaw27']
-        
         self.stages = ['primary',
                        'atm',
                        'ice',
@@ -400,23 +357,8 @@ class Propagator:
         self.model_names = dict()
         self.set_models()
         
-
-    def argnear_below(self, x, a): 
-        # returns the index of the nearest value to x in the array a
-        # such that a[i] <= x
-        # assuming a is sorted low -> high
-        
-        # works by interpolating the inverse function of a[i]
-        return max(min(int(np.interp(x, a, np.arange(len(a)))), len(a)-1), 0)
-
-    def argnear_above(self, x, a): 
-        # returns the index of the nearest value to x in the array a
-        # such that a[i] >= x
-        # assuming a is sorted low -> high
-        
-        # works by interpolating the inverse function of a[i]
-        return max(min(int(np.interp(x, a, np.arange(len(a))))+1, len(a)-1), 0)
     
+    #Loads ice profile data from .csv files to setup depth bins
     def load_ice_profile(self, ice_eq_depth_file, age_scale_file, rho_ice = None, z_min = None, z_deep = None, z_start = None, sample_depths = None):
         if rho_ice is None:
             rho_ice = self.rho_ice
@@ -428,42 +370,6 @@ class Propagator:
             z_start = self.z_start
         if sample_depths is None:
             sample_depths = self.sample_depths
-            
-        """
-        Loads ice profile data from .csv files to setup depth bins
-        
-        Parameters
-        ----------------
-        ice_eq_depth_file - string
-            .csv table converting real depths to ice-equivalent depths
-            (Ice-equivalent depth is defined as the mass per square centimeter above that depth, divided by the density of ice)
-            Columns:
-                z - real depth [m]
-                ice_eq_depth - corresponding ice-equivalent depth [meters-ice-eq]
-        age_scale_file - string
-            .csv table converting depth to ice age
-            Columns:
-                depths_real - depth of ice [m]
-                ages - age of ice [years]
-        rho_ice - float
-            Density of solid ice [g/cm^3]
-            Used to convert ice-equivalent depth to water-equivalent
-        z_min - int or float
-            Minimum depth of density profile [m]
-            (Should always be 0?)
-        z_start - int or float
-            Depth at which sampling starts [m]
-        z_deep - int or float
-            Maximum depth of calculation [m]
-        sample_depths : tuple or array-like of int or float
-            tuple : parameters for numpy.arange to define a 1D array of sample bin edges
-            1D array : sample bin edges, connected
-            2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
-            units: depth [m]
-        """
-        
-        #self.age_scale_file = age_scale_file # relationship between age and depth of ice at Dome-C
-        #self.ice_eq_depth_file = ice_eq_depth_file # relationship bewteen ice-equivalent-depth and real-depth at Dome-C
 
         # read age-scale file
         age_scale = pd.read_csv(age_scale_file)
@@ -481,6 +387,8 @@ class Propagator:
         
         return
     
+    
+    # Sets up depth bins using real and water-equivalent depths
     def set_mass_depth(self, z_bins, h_bins, t_bins = None, z_min = None, z_deep = None, z_start = None, sample_depths = None):
         if t_bins is None:
             t_bins = np.arange(len(z_bins))
@@ -492,39 +400,12 @@ class Propagator:
             z_start = self.z_start
         if sample_depths is None:
             sample_depths = self.sample_depths
-            
-        """
-        Sets up depth bins using real and water-equivalent depths
-        
-        Parameters
-        ----------------
-        z_bins - numpy array, shape (#z+1), dtype float
-            depth bin edges [m]
-        h_bins - numpy array, shape (#z+1), dtype float
-            mass depth bin edges [meters-water-equivalent (m.w.e.) = hg/cm^2]
-            corresponds to z_bins
-        t_bins - numpy array, shape (#z+1), dtype float
-            ice ages by depth [years]
-            corresponds to z_bins
-        z_min - int or float
-            Minimum depth of density profile [m]
-            (Should always be 0?)
-        z_start - int or float
-            Depth at which sampling starts [m]
-        z_deep - int or float
-            Maximum depth of calculation [m]
-        sample_depths : tuple or array-like of int or float
-            tuple : parameters for numpy.arange to define a 1D array of sample bin edges
-            1D array : sample bin edges, connected
-            2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
-            units: depth [m]
-        """
         
         self.z_min = z_min # starting depth for plots (m)
         self.z_deep = z_deep # end depth (m)
 
-        i_min = self.argnear_below(self.z_min, z_bins) # nearest depths_real index to z_min
-        i_end = self.argnear_above(self.z_deep, z_bins) # nearest depths_real index to z_end
+        i_min = argnear_below(self.z_min, z_bins) # nearest depths_real index to z_min
+        i_end = argnear_above(self.z_deep, z_bins) # nearest depths_real index to z_end
         
         # Define depth bins
         self.z_bins = z_bins[i_min:i_end+1] # depth bin edges in steps of 1-year ice age (m)
@@ -547,6 +428,7 @@ class Propagator:
         
         return
     
+    # Loads ice density data from .csv files to setup depth bins
     def load_density(self, density_file, age_scale_file = None, z_min = None, z_deep = None, z_start = None, sample_depths = None):
         if z_min is None:
             z_min = self.z_min
@@ -556,35 +438,6 @@ class Propagator:
             z_start = self.z_start
         if sample_depths is None:
             sample_depths = self.sample_depths
-            
-        """
-        Loads ice density data from .csv files to setup depth bins
-        
-        Parameters
-        ----------------
-        density_file - string
-            .csv table of ice densities
-            Columns:
-                z - depth [m]
-                rho - ice density [g/cm^3]
-        age_scale_file - string
-            .csv table converting depth to ice age
-            Columns:
-                depths_real - depth of ice [m]
-                ages - age of ice [years]
-        z_min - int or float
-            Minimum depth of density profile [m]
-            (Should always be 0?)
-        z_start - int or float
-            Depth at which sampling starts [m]
-        z_deep - int or float
-            Maximum depth of calculation [m]
-        sample_depths : tuple or array-like of int or float
-            tuple : parameters for numpy.arange to define a 1D array of sample bin edges
-            1D array : sample bin edges, connected
-            2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
-            units: depth [m]
-        """
             
         self.density_file = density_file # relationship bewteen ice-equivalent-depth and real-depth at Dome-C
 
@@ -605,6 +458,8 @@ class Propagator:
         
         self.set_density(real_z, rho, t_bins, z_min, z_deep, z_start, sample_depths)
     
+    
+    # Sets up depth bins using real depth and density profile
     def set_density(self, z_bins, rho, t_bins = None, z_min = None, z_deep = None, z_start = None, sample_depths = None):
         if t_bins is None:
             t_bins = np.arange(len(z_bins))
@@ -616,39 +471,12 @@ class Propagator:
             z_start = self.z_start
         if sample_depths is None:
             sample_depths = self.sample_depths
-            
-        """
-        Sets up depth bins using real and water-equivalent depths
-        
-        Parameters
-        ----------------
-        z_bins - numpy array, shape (#z+1), dtype float
-            depth bin edges [m]
-        rho - numpy array, shape (#z+1), dtype float
-            ice density [g/cm^3]
-            corresponds to z_bins
-        t_bins - numpy array, shape (#z+1), dtype float
-            ice ages by depth [years]
-            corresponds to z_bins
-        z_min - int or float
-            Minimum depth of density profile [m]
-            (Should always be 0?)
-        z_start - int or float
-            Depth at which sampling starts [m]
-        z_deep - int or float
-            Maximum depth of calculation [m]
-        sample_depths : tuple or array-like of int or float
-            tuple : parameters for numpy.arange to define a 1D array of sample bin edges
-            1D array : sample bin edges, connected
-            2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
-            units: depth [m]
-        """
         
         self.z_min = z_min # starting depth for plots (m)
         self.z_deep = z_deep # end depth (m)
 
-        i_min = self.argnear_below(self.z_min, z_bins) # nearest depths_real index to z_min
-        i_end = self.argnear_above(self.z_deep, z_bins) # nearest depths_real index to z_end
+        i_min = argnear_below(self.z_min, z_bins) # nearest depths_real index to z_min
+        i_end = argnear_above(self.z_deep, z_bins) # nearest depths_real index to z_end
         
         # Define depth bins
         self.z_bins = z_bins[i_min:i_end+1] # depth bin edges in steps of 1-year ice age (m)
@@ -671,30 +499,18 @@ class Propagator:
         
         return
     
+    
+    # Sets up transformation from depths used in calculation to sample depth bins
     def setup_sample_bins(self, z_start = None, sample_depths = None):
         if z_start is None:
             z_start = self.z_start
         if sample_depths is None:
             sample_depths = self.sample_depths
-            
-        """
-        Sets up transformation from depths used in calculation to sample depth bins
-        
-        Parameters
-        ---------------
-        z_start : int or float
-            Depth at which sampling starts [m]
-        sample_depths : tuple or array-like of int or float
-            tuple : parameters for numpy.arange to define a 1D array of sample bin edges
-            1D array : sample bin edges, connected
-            2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
-            units: depth [m]
-        """
         
         self.z_start = z_start # starting depth of 14C accumulation (m) - close-off depth beneath firn layer
         self.sample_depths = sample_depths # length of ice core samples (m)
 
-        self.i_start = self.argnear_below(self.z_start, self.z_bins) # index of first bin above starting point for 14C accumulation
+        self.i_start = argnear_below(self.z_start, self.z_bins) # index of first bin above starting point for 14C accumulation
         
         if type(self.sample_depths) is tuple:
             z_samp_bins = np.array([np.arange(*self.sample_depths)[:-1], np.arange(*self.sample_depths)[1:]])
@@ -717,38 +533,12 @@ class Propagator:
         dh_samp_mat = np.reshape(self.dh, (-1,1)) * ( (i_samp_bins[1]-i).clip(0,1) - (i_samp_bins[0]-i).clip(0,1) )
         
         self.S_mat = dh_samp_mat / np.sum(dh_samp_mat, axis=0, keepdims=True)
-        # self.S_mat: sample matrix, averages over sample depth range
-        # axis0 - depth bins, len(z)
-        # axis1 - sample bins, len(z_samp)
-        
-        #i_samp = np.append(np.argmin(abs(self.z_bins.reshape((1,-1))-z_samp_ideal.reshape(-1,1)), axis=1), len(self.z_bins)-1)
-        #i_samp[0] = self.i_start # just making sure
-
-        # Define sample depth bins
-        #self.z_samp_bins = self.z_bins[i_samp] # sample depth bin edges (m)
-        #self.z_samp = (self.z_samp_bins[:-1]+self.z_samp_bins[1:])/2 # bin-average of sample depth (m)
-        #self.dz_samp = np.diff(self.z_samp_bins) # bin-width of sample depth (m)
-
-        # Define sample compression matrix
-        #dh_samp = np.zeros(len(i_samp)-1)
-        #self.S_mat = np.zeros((len(self.z_bins)-1, len(i_samp)-1))
-        #for i in range(len(i_samp)-1):
-            #dh_samp[i] = np.sum(self.dh[i_samp[i]:i_samp[i+1]])
-            #self.S_mat[i_samp[i]:i_samp[i+1], i] = self.dh[i_samp[i]:i_samp[i+1]]/dh_samp[i]
         
         return
     
+    
+    # Sets up zenith angle bins
     def set_zenith_bins(self, N_ang = 10):
-        
-        """
-        Sets up zenith angle bins
-        
-        Parameters
-        ---------------
-        N_ang - int
-            Number of zenith angle bins [unitless]
-            zenith angle bins are equally spaced in solid angle
-        """
         
         self.N_ang = N_ang
 
@@ -759,20 +549,9 @@ class Propagator:
         
         return
     
+    
+    # Sets up energy bins
     def set_energy_bins(self, logE_min = -1, logE_max = 11, logE_mu_max = 7, dlogE = 0.1):
-        
-        """
-        Sets up energy bins
-        
-        Parameters
-        ---------------
-        logE_min - int or float
-            log base 10 of the minimum tracked particle energy [log10 GeV]
-        logE_max - int or float
-            log base 10 of the maximum tracked particle energy [log10 GeV]
-        dlogE - int or float
-            Width of particle energy bins in log base 10 [log10 GeV]
-        """
         
         self.logE_min = logE_min # minimum energy (log10 GeV)
         self.logE_max = logE_max # maximum energy (log10 GeV)
@@ -799,32 +578,16 @@ class Propagator:
         
         return
     
+    
+    # Sets up a dummy MCEq instance to pull data from
     def setup_mceq(self, elev=None):
         if not (elev is None):
             self.elev = elev
             config.h_obs = self.elev
-            
-        """
-        Sets up a dummy MCEq instance to pull data from
-        
-        Parameters
-        ----------------
-        elev - int or float
-            Elevation above sea level [m]
-            Used in Matlab atmospheric calculation
-        """
 
         interaction_model = "SIBYLL-2.3c"
-        #interaction_model = "SIBYLL-2.3"
-        #interaction_model = "SIBYLL-2.1"
-        #interaction_model = "EPOS-LHC"
-        #interaction_model = "QGSJET-II-04"
-        #interaction_model = "DPMJET-III"
-        #interaction_model = 'DPMJETIII191'
 
         density_model, density_name = ('CORSIKA', ('USStd', None)), 'CORSIKA_USStd'
-        #density_model, density_name = ('CORSIKA',('SouthPole', 'June')), 'CORSIKA_SP_Jun'
-        #density_model, density_name = ('CORSIKA',('SouthPole', 'December')), 'CORSIKA_SP_Dec'
         
         config.debug_level = 0
         config.enable_default_tracking = False
@@ -844,7 +607,18 @@ class Propagator:
         
         return
     
-    def set_cross_sections(self, sigma_E = None, E_sigma = None, alpha = None, N = None, f_tot = None):
+    
+    # Sets up parameters for production rates calculations
+    def set_cross_sections(self,
+                           sigma_E = None, #fast muon interaction cross section measurement [cm^2] (default value = 4.5e-28, see Heisinger 2002)
+                           E_sigma = None, #energy of cross section measurement [GeV] (default value = 190.)
+                           alpha = None, #cross section energy scaling factor [unitless] (default value = 0.75)
+                               #sigma(E) = sigma_0 * E**alpha
+                           N = None, #density of fast muon interaction targets (oxygen nucleii) [hg^-1]
+                                #oxgyen nucleii per molecule (1) / molecular mass (0.1802 / 6.022e23)
+                           f_tot = None #effective probability of 14C production by capture of a stopped negative muon [unitless]
+                                #f_tot = f_C (Chemcial factor) * f_D (Decay factor) * f_star ()
+                          ):
         if sigma_E is None:
             if hasattr(self, 'sigma_E'):
                 sigma_E = self.sigma_E
@@ -870,33 +644,6 @@ class Propagator:
                 f_tot = self.f_tot
             else:
                 f_tot = 1 * 0.1828 * 0.137
-                
-        """
-        Sets up parameters for production rates calculations
-        
-        Parameters
-        ----------------
-        sigma_E - float
-            fast muon interaction cross section measurement [cm^2]
-            default value = 4.5e-28
-            (see Heisinger)
-        E_sigma - float
-            energy of cross section measurement [GeV]
-            default value = 190.
-        alpha - float
-            cross section energy scaling factor [unitless]
-            sigma(E) = sigma_0 * E**alpha
-            default value = 0.75
-        N - float
-            density of fast muon interaction targets (oxygen nucleii) [hg^-1]
-            #oxgyen nucleii per molecule (1) / molecular mass (0.1802 / 6.022e23)
-        f_tot - float
-            effective probability of 14C production by capture of a stopped negative muon [unitless]
-            f_tot = f_C * f_D * f_star
-            f_C - 
-            f_D - 
-            f_star - 
-        """
 
         # Fast Muon Interaction parameters (Heisinger)
         self.sigma_E = sigma_E #cm^2
@@ -918,17 +665,10 @@ class Propagator:
         
         return
     
-    def set_pressure(self, pressure):
-        
-        """
-        Sets up Balco elevation adjustment factors, starting from pressure
-        
-        Parameters
-        --------------
-        pressure - float
-            atmospheric pressure at site [Pa]
-            used to calculate H in Balco
-        """
+    # Sets up Balco elevation adjustment factors, starting from pressure
+    def set_pressure(self,
+                     pressure # atmospheric pressure at site [Pa]
+                    ):
         
         self.pressure = pressure # surface pressure in Pa, should be 65800 for Dome C
 
@@ -937,17 +677,11 @@ class Propagator:
         
         return
     
-    def set_H(self, H):
-        
-        """
-        Sets up Balco elevation adjustment factors, starting from atmospheric depth above sea level
-        
-        Parameters
-        ----------------
-        H - float
-            atmospheric depth above sea level [m.w.e. = hg/cm^2]
-            H = (1013.25 - pressure/100)*1.019716
-        """
+    # Sets up Balco elevation adjustment factors, starting from atmospheric depth above sea level
+    def set_H(self,
+              H #atmospheric depth above sea level [m.w.e. = hg/cm^2]
+              # H = (1013.25 - pressure/100)*1.019716
+             ):
         
         self.H = H
         
@@ -955,7 +689,12 @@ class Propagator:
         
         return
     
-    def set_models(self, clear=True, update_names=True, **kwargs):
+    #
+    def set_models(self,
+                   clear=True, # Clear existing models?
+                   update_names=True, # Update model names?
+                   **kwargs
+                  ):
         
         for s in self.stages:
             new_models = [ModelStep(*m) for m in kwargs.get(s, [])]
@@ -969,20 +708,20 @@ class Propagator:
         
         return
     
+    #
     def add_models(self, **kwargs):
-        
         self.set_models(clear=False, **kwargs)
         
-        return
-        
+    #
     def clear_models(self):
-        
         self.set_models()
-        
+     
+    #
     def build_model_names(self):
         for s in self.stages:
             self.model_names[s] = sum([sum([['{}{}'.format(i,n) for i in self.model_names.get(m.input,[''])] for n in m.names], []) for m in self.models[s]], [])
         
+    #
     def set_data(self, clear=True, **kwargs):
         
         for s in self.stages:
@@ -992,48 +731,16 @@ class Propagator:
             else:
                 self.data[s] += new_data
         
+        return
+    #
     def add_data(self, **kwargs):
-        
         self.set_data(clear=False, **kwargs)
     
+    #
     def clear_data(self):
-        
         self.set_data()
-
-    def set_primary(self, Phi0, clear=True, run=False):
-
-        self.set_models(clear=clear, **{self.stages[0]: Phi0})
-        
-        if run:
-            self.calculate(start=0, end=0)
-        
-        return
-
-    def load_primary(self, p_models=None, clear=True, run=False): # primary CR intensities
-        
-        if p_models is None:
-            p_models = self.p_models
-            
-        Phi0 = F.load_primary(self, p_models)
-        
-        self.set_models(clear=clear, **{self.stages[0]: Phi0})
-
-        if run:
-            self.calculate(start=0, end=0)
-        return
-
-    def set_primary_identity(self, run=False):
-
-        # sets up primary flux matrix to test each energy of p+ and n0 individually
-
-        Phi0 = F.set_primary_identity(self)
-        
-        self.set_models(**{self.stages[0]: Phi0})
-
-        if run:
-            self.calculate(start=0, end=0)
-        return
     
+    #
     def clear_Phi(self):
         
         self.Phi[self.stages[0]] = np.zeros((0,2,len(self.E)))
@@ -1069,26 +776,55 @@ class Propagator:
         
         return
 
-    def calculate(self, start=0, end=-1, models=None, output=False, clear=True, **kwargs):
-            
-        """
+    #
+    def set_primary(self, Phi0, clear=True, run=False):
+
+        self.set_models(clear=clear, **{self.stages[0]: Phi0})
         
+        if run:
+            self.calculate(start=0, end=0)
         
-        Parameters
-        ------------------------
-        start - 
+        return
+    
+    #
+    def load_primary(self, p_models=None, clear=True, run=False): # primary CR intensities
         
-        end - 
+        if p_models is None:
+            p_models = self.p_models
+            
+        Phi0 = F.load_primary(self, p_models)
         
-        output - bool
-            
-            
-        Returns
-        -----------------------
-        if output, returns:
-        Phi - 
-            
-        """
+        self.set_models(clear=clear, **{self.stages[0]: Phi0})
+
+        if run:
+            self.calculate(start=0, end=0)
+        return
+
+    # sets up primary flux matrix to test each energy of p+ and n0 individually
+    def set_primary_identity(self, run=False):
+
+        Phi0 = F.set_primary_identity(self)
+        
+        self.set_models(**{self.stages[0]: Phi0})
+
+        if run:
+            self.calculate(start=0, end=0)
+        return
+
+    #
+    def calculate(self,
+                  start=0, # name or index of first stage to run
+                  end=-1, # name or index of last stage to run
+                  models=None, # dictionary of lists of ModelSteps to run; if None, runs self.Models
+                  output=False, # return self.Phi after calculation?
+                  clear=True, # overwrite past calculations?  If False, appends new calculations
+                  **kwargs
+                 ):
+        
+        if isinstance(start, str):
+            start = self.stages.index(start)
+        if isinstance(end, str):
+            end = self.stages.index(end)
         if end == -1:
             end = len(self.stages)-1
         if models is None:
@@ -1108,101 +844,6 @@ class Propagator:
             return self.Phi
         return
     
-    def calc_gauss_pred(self, c_samp = None, c_weights=None, output=False):
-        if c_samp is None:
-            if self.c_samp is None: # calculate the predicted 14CO samples if it hasn't been done already
-                c_samp = self.Phi['CO']@self.S_mat[self.i_start:]
-            else:
-                c_samp = self.c_samp
-        if c_weights is None:
-            if self.c_weights is None: # if weights haven't been provided, assume all models are equal
-                c_weights = np.ones(len(c_samp))
-            elif len(self.c_weights)==len(c_samp): # if weights have already been used and fit the number of models here, use them
-                c_weights = self.c_weights
-            else: # if all else fails, assume all models are equal
-                c_weights = np.ones(len(c_samp))
-        
-        # 14CO sample predictions for each model
-        self.c_samp = c_samp
-        
-        # relative weight of each model
-        self.c_weights = c_weights
-        
-        # average of the 14CO predictions
-        self.c_pred = np.average(c_samp, weights=c_weights, axis=0)
-        
-        # covariance matrix for the 14CO predictions
-        self.cov_pred = np.cov(c_samp, aweights=c_weights, rowvar=False)
-        
-        if output:
-            return self.c_pred, self.cov_pred
-        return
-    
-    def get_samples(self, N=1, c_pred=None, cov_pred=None, rel_err=None):
-        if c_pred is None:
-            if self.c_pred is None:
-                self.calc_gauss_pred()
-            c_pred = self.c_pred
-        if cov_pred is None:
-            if self.cov_pred is None:
-                self.calc_gauss_pred()
-            cov_pred = self.cov_pred
-        if rel_err is None:
-            rel_err = self.rel_err
-        
-        # generate random 14CO predictions
-        c = np.random.multivariate_normal(c_pred, cov_pred, N)
-        
-        # generate random relative experimental errors
-        s = np.random.normal(1., rel_err, (N,len(c_pred)))
-        
-        # return simulated 14CO samples w/ experimental error
-        return c*s, c*s * rel_err
-    
-    def log_likelihood(self, c, c_err=None, c_pred=None, cov_pred=None):
-        N_samp = len(self.z_samp)
-        
-        c = np.reshape(c, (-1,N_samp))
-        if c_err is None:
-            c_err = c * self.rel_err
-        else:
-            c_err = np.reshape(c_err, np.shape(c))
-        if c_pred is None:
-            c_pred = self.c_pred
-        c_pred = np.reshape(c_pred, (1,N_samp))
-        if cov_pred is None:
-            cov_pred = self.cov_pred
-        
-        # Calculate total systematic uncertainty
-        # Sigma = cov_pred + np.diag(c_err**2)
-        # I can't find a quick way to diagonalize axis1 into axis 1&2 while preserving axis0
-        Sigma = np.reshape(cov_pred, (1,N_samp,N_samp)) * np.ones((len(c_err),1,1))
-        for i in range(N_samp): # add experimental variance along diagonal
-            Sigma[:,i,i] += c_err[:,i]**2
-        Sigma_inv = np.linalg.inv(Sigma)
-        
-        # difference between measurements and prediction
-        x = (c-np.reshape(c_pred, (1,N_samp))).reshape((-1,N_samp,1))
-        
-        # Calculate chi-square
-        chi2 = (T(x)@Sigma_inv@x)[:,0,0]
-        
-        # Convert to log_likelihood
-        logL = -chi2/2 - np.log(np.linalg.det(2*np.pi*Sigma))/2
-        
-        # Convert to p-value
-        # (using chi_square to calculate, becauSe I can't think how to convert log_likelihood off the top of my head)
-        p = stats.chi2.sf(chi2, N_samp)
-        
-        # Convert to # of standard deviations
-        sig = stats.norm.isf(p/2.)
-        
-        return logL, p, sig
-    
-    def get_sensitivity(self, f_var='linear', error=0.02, amp=None, a_weights=None, P_14C=None, p_weights=None, f_file='factors_2sigma_hull.csv', Pres_conv=True, Normalize=True, Gauss_prod=True, Gauss_f=True, Int_f_all=True, Sample_f=True):
-        
-        return
-    
     # def set_primary_data
     
     # def set_atm_data
@@ -1215,34 +856,17 @@ class Propagator:
     
     # def set_array
     
-    # def plot_primary
-    
-    # def plot_atm
-    
-    # def plot_ice
-    
-    # def plot_prod
-    
-    # def plot_CO
-    
     # def save_primary_to_csv
     
     # def save_atm_to_csv
     
     # def save_ice_to_csv
     
-    def save_prod_to_csv(self, tag=''):
+    def save_prod_to_csv(self,
+                         tag='' # Label for Production Rates (usually location, such as DomeC)
+                        ):
         if tag != '':
             tag = '_'+tag
-            
-        """
-        
-        
-        Parameters
-        -----------------
-        tag - 
-            
-        """
         
         # Note: this method doesn't work if two production rates have the same name
         
