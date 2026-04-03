@@ -47,6 +47,10 @@ def argnear_above(x, a):
     # works by interpolating the inverse function of a[i]
     return max(min(int(np.interp(x, a, np.arange(len(a))))+1, len(a)-1), 0)
 
+def make_bins(x): # takes bin edges and returns edges, centers, & widths
+    X = np.array(x)
+    return X, (X[:-1]+X[1:])/2, np.abs(np.diff(X))
+
 class ModelStep:
 
     def __init__(self, function=None, params=None, names=''):
@@ -97,6 +101,11 @@ class ModelStep:
         return np.concatenate([self.run_solo(Prop, p) for p in self.params])
     
     def run_solo(self, Prop, p):
+        if p in self.params:
+            print(self.names[self.params.index(p)])
+        else:
+            print(self.names[0])
+        
         if type(p) is tuple:
             return self.function(Prop, *p)
         elif type(p) is dict:
@@ -128,50 +137,80 @@ class Propagator:
     
     Grid Values
     ---------------------------------------------------
+    self.z_grid : numpy array, shape (#z_grid), dtype float
+    
+    self.h_grid : numpy array, shape (#z_grid), dtype float
+    
+    self.age_grid : numpy array, shape (#z_grid), dtype float
+    
     self.z_bins : numpy array, shape (#z+1), dtype float
-        depth bin edges [m]
+        production depth bin edges [m]
         Ranges from z_min to z_deep
     self.z : numpy array, shape (#z), dtype float
-        depth bin centers [m]
+        production depth bin centers [m]
         z = (z_bins[:-1] + z_bins[1:])/2
     self.dz : numpy array, shape (#z), dtype float
-        depth bin widths [m]
+        production depth bin widths [m]
         dz = np.diff(z_bins)
     
     self.h_bins : numpy array, shape (#z+1), dtype float
-        mass depth bin edges [meters-water-equivalent (m.w.e.) = hg/cm^2]
+        production mass depth bin edges [meters-water-equivalent (m.w.e.) = hg/cm^2]
         corresponds to z_bins
     self.h : numpy array, shape (#z), dtype float
-        mass depth bin centers [meters-water-equivalent (m.w.e.) = hg/cm^2]
+        production mass depth bin centers [meters-water-equivalent (m.w.e.) = hg/cm^2]
         h = (h_bins[:-1] + h_bins[1:])/2
     self.dh : numpy array, shape (#z), dtype float
-        mass depth bin widths [meters-water-equivalent (m.w.e.) = hg/cm^2]
+        production mass depth bin widths [meters-water-equivalent (m.w.e.) = hg/cm^2]
         dh = np.diff(h_bins)
     
-    self.t_bins : numpy array, shape (#z+1), dtype float
-        ice age bin edges [years]
-        corresponds to z_bins
-    self.t : numpy array, shape (#z), dtype float
-        ice age bin centers [years]
-        t = (t_bins[:-1] + t_bins[1:])/2
-    self.dt : numpy array, shape (#z), dtype float
-        ice age bin widths [years]
-        dt = np.diff(t_bins)
+    self.rho : numpy array, shape (#z), dtype float
+        average density in production depth bins [g/cm^3]
+        rho = dh/dz
         
+    self.z_accum_bins : numpy array, shape (#z_accum+1), dtype float
+        accumulation depth bin edges [m]
+        Ranges from shallowest to deepest sample depth
+    self.z_accum : numpy array, shape (#z_accum), dtype float
+        accumulation depth bin centers [m]
+        z = (z_bins[:-1] + z_bins[1:])/2
+    self.dz_accum : numpy array, shape (#z_accum), dtype float
+        accumulation depth bin widths [m]
+        dz = np.diff(z_bins)
+    
+    self.h_accum_bins : numpy array, shape (#z_accum+1), dtype float
+        accumulation mass depth bin edges [meters-water-equivalent (m.w.e.) = hg/cm^2]
+    self.h_accum : numpy array, shape (#z_accum), dtype float
+        accumulation mass depth bin centers [meters-water-equivalent (m.w.e.) = hg/cm^2]
+    self.dh_accum : numpy array, shape (#z_accum), dtype float
+        accumulation mass depth bin widths [meters-water-equivalent (m.w.e.) = hg/cm^2]
+    
+    self.t_int_bins : numpy array, shape (#t_int+1), dtype float
+        integration time bin edges [yrs]
+        Ranges from age(z_start) - age(z_deep) to 0 (present)
+    self.t_int : numpy array, shape (#t_int), dtype float
+        integration time bin centers [yrs]
+    self.dt_int : numpy array, shape (#t_int), dtype float
+        integration time bin widths [yrs]
+    
     self.z_samp_bins : numpy array, shape (#samp+1), dtype float
         sample depth bin edges [m]
     self.z_samp : numpy array, shape (#samp), dtype float
         sample depth bin centers [m]
     self.dz_samp : numpy array, shape (#samp), dtype float
         sample depth bin widths [m]
-        
-    self.S_mat : numpy array, shape (#z, #samp), dtype float
+    
+    self.h_samp_bins : numpy array, shape (#samp+1), dtype float
+        sample mass depth bin edges [meters-water-equivalent (m.w.e.) = hg/cm^2]
+    self.h_samp : numpy array, shape (#samp), dtype float
+        sample mass depth bin centers [meters-water-equivalent (m.w.e.) = hg/cm^2]
+    self.dh_samp : numpy array, shape (#samp), dtype float
+        sample mass depth bin widths [meters-water-equivalent (m.w.e.) = hg/cm^2]
+    
+    self.S_mat : numpy array, shape (#z_accum, #z_samp), dtype float
         Matrix averaging over the depth bins in a core sample [unitless]
-        Given an array A whose final axis ranges over depth,
+        Given an array A whose final axis ranges over accumulation depth,
         A_samp = A @ S_mat
         Where A_samp lists the average value of A in each core sample.
-    self.i_start : int
-        depth index where 14CO accumulation starts [unitless]
     
     self.cosTH_bins : numpy array, shape (#cosTH+1), dtype float
         cosine zenith angle bin edges [unitless]
@@ -193,10 +232,20 @@ class Propagator:
         particle energy bin widths [GeV]
         dE = np.diff(E_bins)
         
+    self.E_mu_bins : numpy array, shape (#E_mu+1), dtype float
+        muon energy bin edges [GeV]
+    self.E_mu : numpy array, shape (#E_mu), dtype float
+        muon energy bin centers [GeV]
+    self.dE_mu : numpy array, shape (#E_mu), dtype float
+        muon energy bin widths [GeV]
+        
     Muon Propagation Parameters
     ------------------------------------------------------
     self.rho_ice : float
         Density of solid ice [g/cm^3]
+        
+    self.z_close : float
+        Close-off depth, below which ice accumulates 14CO [m]
         
     self.pressure : float
         atmospheric pressure at site [Pa]
@@ -287,7 +336,7 @@ class Propagator:
                  pressure = 65800, # atmospheric pressure at site [Pa], used in Balco elevation adjustment for Heisinger calculation
                  elev=3233, #Elevation above sea level [m]
                  rho_ice = 0.9239, # Density of solid ice [g/cm^3]
-                 f_factors = [0.072, 0.066], #coefficients scaling 14CO production via fast (f_fast) and negative (f_neg) muon interactions [unitless]
+                 #f_factors = [0.072, 0.066], #coefficients scaling 14CO production via fast (f_fast) and negative (f_neg) muon interactions [unitless]
                  ice_eq_depth_file = 'Real_vs_ice_eq_depth.csv', #.csv table converting real depths to ice-equivalent depths
                     #(Ice-equivalent depth is defined as the mass per square centimeter above that depth, divided by the density of ice)
                     #Columns:
@@ -297,24 +346,41 @@ class Propagator:
                     #Columns:
                         #depths_real - depth of ice [m]
                         #ages - age of ice [years]
-                 z_min = 0, # Minimum depth of density profile [m] (Should always be 0?)
-                 z_start = 96.5, #Depth at which 14CO accumulation starts [m]
-                 z_deep = 300, #Maximum depth of calculation [m]
+                 density_file = None,
+                 z_grid = None,
+                 h_grid = None,
+                 age_grid = None,
+                 #z_min = 0, # Minimum depth of density profile [m] (Should always be 0?)
+                 z_close = 96.5, #Depth at which 14CO accumulation starts [m]
+                 #z_deep = 300, #Maximum depth of calculation [m]
+                 h_bins = None,
                  sample_depths = (100.,301.,20.), # depths defining sample bins [m]
+                 h_accum_bins = None,
+                 t_int_bins = None,
                  #tuple : parameters for numpy.arange to define a 1D array of sample bin edges
-                #1D array : sample bin edges, connected
-                #2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
-                 N_ang = 10, # Number of zenith angle bins [unitless] (zenith angle bins are equally spaced in solid angle)
+                 #1D array : sample bin edges, connected
+                 #2D array : sample bin edges in form [[min0, min1, ...], [max0, max1, ...]]
+                 cosTH_bins = 10, # Number of zenith angle bins [unitless] (zenith angle bins are equally spaced in solid angle)
                  logE_min = -1, #log base 10 of the minimum tracked particle energy [log10 GeV]
                  logE_max = 11, #log base 10 of the maximum tracked particle energy [log10 GeV]
                  logE_mu_max = 7.5, #log base 10 of the maximum tracked  MUON energy [log10 GeV]
                 ):
         
+        self.rho_ice = rho_ice
+        self.z_close = z_close
+        
         # load in depth, mass depth, and time bins (default location - Dome C, Antarctica)
-        self.load_ice_profile(ice_eq_depth_file, age_scale_file, rho_ice, z_min, z_deep, z_start, sample_depths)
+        if not (z_grid is None) and not (h_grid is None):
+            self.set_ice_profile(z_grid, h_grid, age_grid, h_bins, sample_depths, h_accum_bins)
+        elif not density_file is None:
+            self.load_density(density_file, age_scale_file, h_bins, sample_depths, h_accum_bins)
+        else:
+            self.load_ice_profile(ice_eq_depth_file, age_scale_file, rho_ice, h_bins, sample_depths, h_accum_bins)
+        
+        self.set_integration_time(t_int_bins)
         
         # set zenith angle bins (default 10 equally spaced in solid angle)
-        self.set_zenith_bins(N_ang)
+        self.set_zenith_bins(cosTH_bins)
         
         # set energy bins (default 120 equally space between logE = 1e-1 and 1e11)
         self.set_energy_bins(logE_min, logE_max, logE_mu_max, 0.1)
@@ -330,7 +396,7 @@ class Propagator:
         self.set_cross_sections()
 
         # Production rate adjustment from Taylor Glacier data
-        self.f_factors = np.array(f_factors)
+        #self.f_factors = np.array(f_factors)
         
         self.setup_mceq(elev)
         
@@ -357,19 +423,29 @@ class Propagator:
         self.model_names = dict()
         self.set_models()
         
+    # interpolate between z, h, and age grids
+    def z_to_h(self, z):
+        return np.interp(z, self.z_grid, self.h_grid)
+    def z_to_age(self, z):
+        return np.interp(z, self.z_grid, self.age_grid)
+    def h_to_z(self, h):
+        return np.interp(h, self.h_grid, self.z_grid)
+    def h_to_age(self, h):
+        return np.interp(h, self.h_grid, self.age_grid)
+    def age_to_z(self, age):
+        return np.interp(age, self.age_grid, self.z_grid)
+    def age_to_h(self, age):
+        return np.interp(age, self.age_grid, self.h_grid)
+    
+    def h_prime(self, h, t): # mass depth of an ice parcel at time t if it ends at mass depth h
+        return self.age_to_h(self.h_to_age(h)+t)
     
     #Loads ice profile data from .csv files to setup depth bins
-    def load_ice_profile(self, ice_eq_depth_file, age_scale_file, rho_ice = None, z_min = None, z_deep = None, z_start = None, sample_depths = None):
+    def load_ice_profile(self, ice_eq_depth_file, age_scale_file, rho_ice = None, h_bins = None, sample_depths = None, h_accum_bins = None):
         if rho_ice is None:
             rho_ice = self.rho_ice
-        if z_min is None:
-            z_min = self.z_min
-        if z_deep is None:
-            z_deep = self.z_deep
-        if z_start is None:
-            z_start = self.z_start
-        if sample_depths is None:
-            sample_depths = self.sample_depths
+        else:
+            self.rho_ice = rho_ice # density of solid ice at Dome C (g/cm^3)
 
         # read age-scale file
         age_scale = pd.read_csv(age_scale_file)
@@ -381,63 +457,12 @@ class Propagator:
         real_z = np.array(ice_eq_depth['z']) # meters
         ice_eq_z = np.array(ice_eq_depth['ice_eq_z']) # meters (ice-eq) aka mass-depth / ice density
         
-        self.rho_ice = rho_ice # density of solid ice at Dome C (g/cm^3)
-        
-        self.set_mass_depth(depths_real, np.interp(depths_real, real_z, ice_eq_z)*self.rho_ice, ages, z_min, z_deep, z_start, sample_depths)
-        
-        return
-    
-    
-    # Sets up depth bins using real and water-equivalent depths
-    def set_mass_depth(self, z_bins, h_bins, t_bins = None, z_min = None, z_deep = None, z_start = None, sample_depths = None):
-        if t_bins is None:
-            t_bins = np.arange(len(z_bins))
-        if z_min is None:
-            z_min = self.z_min
-        if z_deep is None:
-            z_deep = self.z_deep
-        if z_start is None:
-            z_start = self.z_start
-        if sample_depths is None:
-            sample_depths = self.sample_depths
-        
-        self.z_min = z_min # starting depth for plots (m)
-        self.z_deep = z_deep # end depth (m)
-
-        i_min = argnear_below(self.z_min, z_bins) # nearest depths_real index to z_min
-        i_end = argnear_above(self.z_deep, z_bins) # nearest depths_real index to z_end
-        
-        # Define depth bins
-        self.z_bins = z_bins[i_min:i_end+1] # depth bin edges in steps of 1-year ice age (m)
-        self.z = (self.z_bins[:-1]+self.z_bins[1:])/2 # bin-average of z (m)
-        self.dz = np.diff(self.z_bins) # bin-width of z (m)
-
-        # Define mass depth bins
-        self.h_bins = h_bins[i_min:i_end+1] # mass depth bin edges corresponding to z bins (m.w.e = hg/cm^2)
-        self.h = (self.h_bins[:-1]+self.h_bins[1:])/2 # bin-average of h (m.w.e = hg/cm^2)
-        self.dh = np.diff(self.h_bins) # bin-width of h (m.w.e = hg/cm^2)
-
-        self.rho = self.dh/self.dz # density of depth bins
-
-        # Define time bins
-        self.t_bins = t_bins[i_min:i_end+1] # ice age bins corresponding to z array (years)
-        self.t = (self.t_bins[:-1]+self.t_bins[1:])/2 # bin-average of t (years)
-        self.dt = np.diff(self.t_bins) # bin-width of t (years)
-        
-        self.setup_sample_bins(z_start, sample_depths)
+        self.set_ice_profile(depths_real, np.interp(depths_real, real_z, ice_eq_z)*self.rho_ice, ages, h_bins, sample_depths, h_accum_bins)
         
         return
     
     # Loads ice density data from .csv files to setup depth bins
-    def load_density(self, density_file, age_scale_file = None, z_min = None, z_deep = None, z_start = None, sample_depths = None):
-        if z_min is None:
-            z_min = self.z_min
-        if z_deep is None:
-            z_deep = self.z_deep
-        if z_start is None:
-            z_start = self.z_start
-        if sample_depths is None:
-            sample_depths = self.sample_depths
+    def load_density(self, density_file, age_scale_file = None, h_bins = None, sample_depths = None, h_accum_bins = None):
             
         self.density_file = density_file # relationship bewteen ice-equivalent-depth and real-depth at Dome-C
 
@@ -445,113 +470,117 @@ class Propagator:
         density_scale = pd.read_csv(self.density_file)
         real_z = np.array(density_scale['z']) # meters
         rho = np.array(density_scale['rho']) # 
+        h_grid = np.append(rho[0]*real_z[0],np.cumsum((rho[:-1]+rho[1:])/2*np.diff(real_z)))
         
         if age_scale_file is None:
-            t_bins = None
+            age_grid = None
         else:
             self.age_scale_file = age_scale_file # relationship between age and depth of ice at Dome-C
             # read age-scale file
             age_scale = pd.read_csv(self.age_scale_file)
             ages = np.array(age_scale['ages']) # years
             depths_real = np.array(age_scale['depths_real']) # meters
-            t_bins = np.interp(real_z, depths_real, ages)
+            age_grid = np.interp(real_z, depths_real, ages)
         
-        self.set_density(real_z, rho, t_bins, z_min, z_deep, z_start, sample_depths)
-    
-    
-    # Sets up depth bins using real depth and density profile
-    def set_density(self, z_bins, rho, t_bins = None, z_min = None, z_deep = None, z_start = None, sample_depths = None):
-        if t_bins is None:
-            t_bins = np.arange(len(z_bins))
-        if z_min is None:
-            z_min = self.z_min
-        if z_deep is None:
-            z_deep = self.z_deep
-        if z_start is None:
-            z_start = self.z_start
-        if sample_depths is None:
-            sample_depths = self.sample_depths
+        self.set_ice_profile(real_z, h_grid, age_grid, h_bins, sample_depths, h_accum_bins)
         
-        self.z_min = z_min # starting depth for plots (m)
-        self.z_deep = z_deep # end depth (m)
-
-        i_min = argnear_below(self.z_min, z_bins) # nearest depths_real index to z_min
-        i_end = argnear_above(self.z_deep, z_bins) # nearest depths_real index to z_end
+    def set_ice_profile(self, z_grid, h_grid, age_grid = None, h_bins = None, sample_depths = None, h_accum_bins = None):
         
-        # Define depth bins
-        self.z_bins = z_bins[i_min:i_end+1] # depth bin edges in steps of 1-year ice age (m)
-        self.z = (self.z_bins[:-1]+self.z_bins[1:])/2 # bin-average of z (m)
-        self.dz = np.diff(self.z_bins) # bin-width of z (m)
+        self.z_grid = z_grid
+        self.h_grid = h_grid
+        self.age_grid = age_grid
         
-        self.rho = (rho[i_min:i_end]+rho[i_min+1:i_end+1])/2 # density of depth bins
-
-        # Define mass depth bins - assumes constant density above z_bins[0]
-        self.dh = self.rho * self.dz # bin-width of h (m.w.e = hg/cm^2)
-        self.h_bins = np.cumsum(np.concatenate(([np.sum(self.z_bins[:i_min+1]*rho[:i_min+1])], self.dh))) # mass depth bin edges corresponding to z bins (m.w.e = hg/cm^2)
-        self.h = (self.h_bins[:-1]+self.h_bins[1:])/2 # bin-average of h (m.w.e = hg/cm^2)
-
-        # Define time bins
-        self.t_bins = t_bins[i_min:i_end+1] # ice age bins corresponding to z array (years)
-        self.t = (self.t_bins[:-1]+self.t_bins[1:])/2 # bin-average of t (years)
-        self.dt = np.diff(self.t_bins) # bin-width of t (years)
-        
-        self.setup_sample_bins(z_start, sample_depths)
+        self.set_production_depth(h_bins)
+        self.set_sample_depth(sample_depths, h_accum_bins)
         
         return
     
+    def set_production_depth(self, h_bins = None):
+        if h_bins is None:
+            if hasattr(self, 'h_bins'):
+                h_bins = self.h_bins
+            else:
+                dh = 1.
+                h_bins = np.arange(self.h_grid[0], self.h_grid[-1], dh)
+            
+        self.h_bins, self.h, self.dh = make_bins(h_bins)
+        self.z_bins, self.z, self.dz = make_bins(self.h_to_z(h_bins))
+        
+        self.rho = self.dh/self.dz
+        
+        return
     
-    # Sets up transformation from depths used in calculation to sample depth bins
-    def setup_sample_bins(self, z_start = None, sample_depths = None):
-        if z_start is None:
-            z_start = self.z_start
-        if sample_depths is None:
-            sample_depths = self.sample_depths
-        
-        self.z_start = z_start # starting depth of 14C accumulation (m) - close-off depth beneath firn layer
-        self.sample_depths = sample_depths # length of ice core samples (m)
-
-        self.i_start = argnear_below(self.z_start, self.z_bins) # index of first bin above starting point for 14C accumulation
-        
-        if type(self.sample_depths) is tuple:
-            z_samp_bins = np.array([np.arange(*self.sample_depths)[:-1], np.arange(*self.sample_depths)[1:]])
-        elif len(np.shape(self.sample_depths)) == 1:
-            z_samp_bins = np.array([self.sample_depths[:-1], self.sample_depths[1:]])
-        elif len(np.shape(self.sample_depths)) == 2:
-            z_samp_bins = np.array(self.sample_depths)[:2]
+    def set_sample_depth(self, sample_depths = None, h_accum_bins = None):
+        # Setup sample depths
+        if sample_depths is None and hasattr(self, 'z_samp_bins'):
+            z_samp_bins = self.z_samp_bins
         else:
-            print('Invalid Sample Depths Format')
-            z_samp_bins = np.array([[self.z_start],[self.z_deep]])
+            if type(sample_depths) is tuple:
+                z_samp_bins = np.array([np.arange(*sample_depths)[:-1], np.arange(*sample_depths)[1:]])
+            elif len(np.shape(self.sample_depths)) == 1:
+                z_samp_bins = np.array([self.sample_depths[:-1], self.sample_depths[1:]])
+            elif len(np.shape(self.sample_depths)) == 2:
+                z_samp_bins = np.array(self.sample_depths)[:2]
+            else:
+                print('Invalid Sample Depths Format')
+                z_samp_bins = np.array([self.z_accum_bins[:-1], self.z_accum_bins[1:]])
+
+            self.z_samp_bins = z_samp_bins
+            self.z_samp = (self.z_samp_bins[0] + self.z_samp_bins[1])/2
+            self.dz_samp = self.z_samp_bins[1]-self.z_samp_bins[0]
         
-        self.z_samp_bins = z_samp_bins
-        self.z_samp = (self.z_samp_bins[0] + self.z_samp_bins[1])/2
-        self.dz_samp = self.z_samp_bins[1]-self.z_samp_bins[0]
+        self.h_samp_bins = self.z_to_h(z_samp_bins)
+        self.h_samp = (self.h_samp_bins[0] + self.h_samp_bins[1])/2
+        self.dh_samp = self.h_samp_bins[1]-self.h_samp_bins[0]
         
-        i_samp_bins = np.expand_dims(np.interp(self.z_samp_bins, self.z_bins, np.arange(len(self.z_bins))), axis=1)
-        i = np.reshape(np.arange(len(self.dh)), (-1,1))
+        # Setup accumulation depths
+        if h_accum_bins is None:
+            if hasattr(self, 'h_accum_bins'):
+                h_accum_bins = self.h_accum_bins
+            else:
+                dh = 1.
+                h_accum_bins = np.arange(self.h_samp_bins[0,0], self.h_samp_bins[1,-1]+dh, dh)
+            
+        self.h_accum_bins, self.h_accum, self.dh_accum = make_bins(h_accum_bins)
+        self.z_accum_bins, self.z_accum, self.dz_accum = make_bins(self.h_to_z(h_accum_bins))
+        
+        # Setup matrix to average samples over accumulation depths
+        #i_samp_bins = np.expand_dims(np.interp(self.z_samp_bins, self.z_accum_bins, np.arange(len(self.z_accum_bins))), axis=1)
+        #i = np.reshape(np.arange(len(self.dh_accum)), (-1,1))
         
         # matrix of the mass/cm^2 of each depth bin which is within the bounds of each sample bin
-        dh_samp_mat = np.reshape(self.dh, (-1,1)) * ( (i_samp_bins[1]-i).clip(0,1) - (i_samp_bins[0]-i).clip(0,1) )
-        
+        #dh_samp_mat = np.reshape(self.dh_accum, (-1,1)) * ( (i_samp_bins[1]-i).clip(0,1) - (i_samp_bins[0]-i).clip(0,1) )
+        dh_samp_mat = (self.h_samp_bins[1].reshape((1,-1))-self.h_accum_bins[:-1].reshape((-1,1))).clip(0,self.dh_accum.reshape((-1,1))) - (self.h_samp_bins[0].reshape((1,-1))-self.h_accum_bins[:-1].reshape((-1,1))).clip(0,self.dh_accum.reshape((-1,1)))
+  
         self.S_mat = dh_samp_mat / np.sum(dh_samp_mat, axis=0, keepdims=True)
         
         return
     
+    def set_integration_time(self, t_int_bins=None):
+        if t_int_bins is None:
+            if self.age_grid is None:
+                return
+            else:
+                t_int_bins = -np.flip(np.arange(0, self.z_to_age(self.z_accum_bins[-1])-self.z_to_age(self.z_close)+1))
+        
+        self.t_int_bins, self.t_int, self.dt_int = make_bins(t_int_bins)
+        
+        return
     
     # Sets up zenith angle bins
-    def set_zenith_bins(self, N_ang = 10):
-        
-        self.N_ang = N_ang
+    def set_zenith_bins(self, cosTH_bins = 10):
+        if isinstance(cosTH_bins, int):
+            N = cosTH_bins
+            cosTH_bins = np.linspace(1,0,N+1)
 
         # Define zenith angle bins
-        self.cosTH_bins = np.linspace(1,0,self.N_ang+1)
-        self.cosTH = (self.cosTH_bins[:-1]+self.cosTH_bins[1:])/2
-        self.dcosTH = -np.diff(self.cosTH_bins)
+        self.cosTH_bins, self.cosTH, self.dcosTH = make_bins(cosTH_bins)
         
         return
     
     
     # Sets up energy bins
-    def set_energy_bins(self, logE_min = -1, logE_max = 11, logE_mu_max = 7, dlogE = 0.1):
+    def set_energy_bins(self, logE_min = -1, logE_max = 11, logE_mu_max = 7.5, dlogE = 0.1):
         
         self.logE_min = logE_min # minimum energy (log10 GeV)
         self.logE_max = logE_max # maximum energy (log10 GeV)
@@ -571,8 +600,6 @@ class Propagator:
         self.E_mu_bins = 10.**(self.logE_mu_bins) # GeV
         self.E_mu = 10.**(self.logE_mu)
         self.dE_mu = np.diff(self.E_mu_bins)
-
-        # how to average E?  Currently doing geometric mean, but maybe there's a better way.
         
         self.setup_mceq()
         
@@ -749,14 +776,14 @@ class Propagator:
         #axis1 - Particle Species (proton, neutron)
         #axis2 - Primary Energy (E)
         
-        self.Phi[self.stages[1]] = np.zeros((0,len(self.cosTH),2,len(self.E)))
+        self.Phi[self.stages[1]] = np.zeros((0,len(self.cosTH),2,len(self.E_mu)))
         #Phi_atm
         #axis0 - Atmospheric Model
         #axis1 - Zenith Angle
         #axis2 - Muon Charge (positive, negative)
         #axis3 - Muon Energy (E_mu)
         
-        self.Phi[self.stages[2]] = np.zeros((0,len(self.cosTH),2,len(self.E),len(self.z_bins)))
+        self.Phi[self.stages[2]] = np.zeros((0,2,len(self.E_mu),len(self.z_bins)))
         #Phi_ice
         #axis0 - Underice Model
         #axis1 - Muon Charge (positive, negative)
@@ -769,7 +796,7 @@ class Propagator:
         #axis1 - Production Mode (fast, neg)
         #axis2 - depth (top -> bottom)
         
-        self.Phi[self.stages[4]] = np.zeros((0,len(self.z)))
+        self.Phi[self.stages[4]] = np.zeros((0,len(self.z_accum)))
         #CO
         #axis0 - 14CO Model
         #axis1 - depth (top -> bottom)
@@ -832,13 +859,15 @@ class Propagator:
         
         for s in self.stages[start:end+1]:
             print('Running {} stage...'.format(s))
-            if clear:
-                self.Phi[s] = np.concatenate([m.run(self) for m in models[s]]) if len(models[s])>0 else np.zeros((0,*np.shape(self.Phi[s])[1:]))
-                self.model_names[s] = sum([sum([['{}{}'.format(i,n) for i in self.model_names.get(m.input,[''])] for n in m.names], []) for m in models[s]], [])
-            else:
-                self.Phi[s] = np.append(self.Phi[s], np.concatenate([m.run(self) for m in models[s]]), axis=0) if len(models[s])>0 else self.Phi[s]
-                self.model_names[s] += sum([sum([['{}{}'.format(i,n) for i in self.model_names.get(m.input,[''])] for n in m.names], []) for m in models[s]], [])
+            if len(models[s])>0:
+                if clear:
+                    self.Phi[s] = np.concatenate([m.run(self) for m in models[s]], axis = 0)
+                    self.model_names[s] = []
+                else:
+                    self.Phi[s] = np.append(self.Phi[s], np.concatenate([m.run(self) for m in models[s]], axis = 0))
+                self.model_names[s] += ['{}{}'.format(i,n) for m in models[s] for n in m.names for i in self.model_names.get(m.input,[''])]
             print('{} stage complete'.format(s))
+            print()
         
         if output:
             return self.Phi
