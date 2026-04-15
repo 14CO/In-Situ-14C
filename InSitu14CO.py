@@ -861,11 +861,15 @@ class Propagator:
             print('Running {} stage...'.format(s))
             if len(models[s])>0:
                 if clear:
-                    self.Phi[s] = np.concatenate([m.run(self) for m in models[s]], axis = 0)
+                    #self.Phi[s] = np.concatenate([m.run(self) for m in models[s]], axis = 0)
+                    self.Phi[s] = self.Phi[s][0:0]
                     self.model_names[s] = []
-                else:
-                    self.Phi[s] = np.append(self.Phi[s], np.concatenate([m.run(self) for m in models[s]], axis = 0))
-                self.model_names[s] += ['{}{}'.format(i,n) for m in models[s] for n in m.names for i in self.model_names.get(m.input,[''])]
+                #else:
+                    #self.Phi[s] =  np.concatenate([self.Phi[s], *[m.run(self) for m in models[s]]], axis = 0)
+                #self.model_names[s] += ['{}{}'.format(i,n) for m in models[s] for n in m.names for i in self.model_names.get(m.input,[''])]
+                for m in models[s]: # for loop method allows models to draw on output of previous calculations in same stage
+                    self.Phi[s] = np.concatenate([self.Phi[s], m.run(self)], axis=0)
+                    self.model_names[s] += ['{}{}'.format(i,n) for n in m.names for i in self.model_names.get(m.input,[''])]
             print('{} stage complete'.format(s))
             print()
         

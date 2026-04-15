@@ -506,7 +506,7 @@ def E_surf(Prop,
     return ((E_d + a/b)*np.exp(X*b)-a/b).clip(min=Prop.E_bins[0])
 
 def Heisinger_ice(Prop, 
-                  norm=True, 
+                  #norm=True, 
                   mode=0, 
                   a=None, 
                   b=None, 
@@ -609,11 +609,20 @@ def Heisinger_ice(Prop,
         #axis2 - Muon Energy
         #axis3 - depth (top -> bottom)
 
-    # Normalize the result to Heisinger's total flux fit (elevation adjusted by Balco)
-    if norm:
-        return Phi_proj / np.sum(Phi_proj * np.reshape(Prop.dE_mu,(1,1,-1,1)), axis=(1,2), keepdims=True) * np.reshape(phi_all(Prop.h_bins,np.append(Prop.dh,Prop.dh[-1]),Prop.H)[0], (1,1,1,-1))
+    #if norm:
+        #return Phi_proj / np.sum(Phi_proj * np.reshape(Prop.dE_mu,(1,1,-1,1)), axis=(1,2), keepdims=True) * np.reshape(phi_all(Prop.h_bins,np.append(Prop.dh,Prop.dh[-1]),H)[0], (1,1,1,-1))
     
     return Phi_proj
+
+def Heisinger_norm(Prop, H = None):
+    # Normalize Phi_ice to Heisinger's total flux fit (elevation adjusted by Balco)
+    
+    if Prop is None: # run function with Prop=None to get input stage
+        return 'ice'
+    if H is None:
+        H = Prop.H
+    
+    return Prop.Phi['ice'] / np.sum(Prop.Phi['ice'] * np.reshape(Prop.dE_mu,(1,1,-1,1)), axis=(1,2), keepdims=True) * np.reshape(phi_all(Prop.h_bins,np.append(Prop.dh,Prop.dh[-1]),Prop.H)[0], (1,1,1,-1))
 
 
 def Heisinger_full(Prop, H=None):
