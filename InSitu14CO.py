@@ -2,7 +2,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-#import os.path
+import os.path
 
 from MCEq.core import MCEqRun
 from MCEq import config
@@ -98,13 +98,10 @@ class ModelStep:
         if self.function is None:
             return np.array(self.params)
         
-        return np.concatenate([self.run_solo(Prop, p) for p in self.params])
+        return np.concatenate([self.run_solo(Prop, p, i) for i,p in enumerate(self.params)])
     
-    def run_solo(self, Prop, p):
-        if p in self.params:
-            print(self.names[self.params.index(p)])
-        else:
-            print(self.names[0])
+    def run_solo(self, Prop, p, i=0):
+        print(self.names[i])
         
         if type(p) is tuple:
             return self.function(Prop, *p)
@@ -687,7 +684,7 @@ class Propagator:
         #self.f_star = 0.137
         #self.df_star = 0.011
         
-        #f_star, df_star = 4.4e-3/f_C/f_D, 2.6e-3/f_C/f_D
+        #f_star, df_star = 4.4e-3/f_C/f_D, 2.6e-3/f_C/f_D #<- where did I get this from?? This is wrong!
         self.f_tot = f_tot
         
         return
@@ -896,12 +893,11 @@ class Propagator:
     # def save_ice_to_csv
     
     def save_prod_to_csv(self,
-                         tag='' # Label for Production Rates (usually location, such as DomeC)
+                         tag='', # Label for Production Rates (usually location, such as DomeC)
+                         overwrite=False, # Overwrite existing files?
                         ):
         if tag != '':
             tag = '_'+tag
-        
-        # Note: this method doesn't work if two production rates have the same name
         
         P_fast = dict()
         P_neg = dict()
@@ -911,10 +907,55 @@ class Propagator:
             
         df_fast = pd.DataFrame(P_fast)
         df_neg = pd.DataFrame(P_neg)
-        df_fast.to_csv('Production Rates/P_fast{}_{}m.csv'.format(tag, self.elev), index=False)
-        print('Saved to:  Production Rates/P_fast{}_{}m.csv'.format(tag, self.elev))
-        df_neg.to_csv('Production Rates/P_neg{}_{}m.csv'.format(tag, self.elev), index=False)
-        print('Saved to:  Production Rates/P_neg{}_{}m.csv'.format(tag, self.elev))
+        
+        i=0
+        done=False
+        while i<100 and not done:
+            num = ' ({})'.format(i) if i>0 else ''
+            fast_file = 'Production Rates/P_fast{}_{}m{}.csv'.format(tag, self.elev, num)
+            neg_file = 'Production Rates/P_neg{}_{}m{}.csv'.format(tag, self.elev, num)
+            if not (os.path.exists(fast_file) or os.path.exists(neg_file)) or overwrite:
+                print('Saving fast production rates...')
+                df_fast.to_csv(fast_file, index=False)
+                print('Saved to:  {}'.format(fast_file))
+                print()
+                print('Saving neg production rates...')
+                df_neg.to_csv(neg_file, index=False)
+                print('Saved to:  {}'.format(neg_file))
+                done=True
+            i+=1
+        if not done:
+            print('Failed to save.')
+        
+        return
+    
+    def load_prod_from_csv(self,
+                          tag='',
+                          i=0,
+                          output = True):
+        if tag != '':
+            tag = '_'+tag
+        if i<0:
+            i=0
+        i = int(i)
+            
+        num = ' ({})'.format(i) if i>0 else ''
+        fast_file = 'Production Rates/P_fast{}_{}m{}.csv'.format(tag, self.elev, num)
+        neg_file = 'Production Rates/P_neg{}_{}m{}.csv'.format(tag, self.elev, num)
+        
+        if os.path.exists(fast_file) and os.path.exists(neg_file):
+            print('Loading fast production rates...')
+            df_Pfast_DC = pd.read_csv(fast_file)
+            print('Loading neg production rates...')
+            df_Pneg_DC = pd.read_csv(neg_file)
+            
+            self.Phi['prod'] = np.swapaxes([df_Pfast_DC.T, df_Pneg_DC.T], 0, 1)
+            self.model_names['prod'] = list(df_Pfast_DC.columns)
+            print('Production rates loaded.')
+            if output:
+                return np.copy(self.Phi['prod']), list(self.model_names['prod'])
+        else:
+            print('Files do not exist.')
         
         return
     

@@ -347,15 +347,20 @@ def phi_vert_site(h, dh, H, h_end=2e3):
     R_site - 
 
     """
-
+    
+    # vertical muon flux fit at sea level
     Phi_v= phi_vert_slhl(h)
-
+    
+    # vertical muon stopping rate at sea level (d/dh flux)
     R_v = R_vert_slhl(h)
-
+    
+    # scale stopping rate by ratio of attenuated muons from sea level to elevation H
     R_site = R_v * np.exp(H/att_L(h))
-
+    
+    # flux converges to same value at depth h_end, regardless of elevation??
     Phi_end = phi_vert_slhl(h_end)
-
+    
+    # integrate rescaled stopping rate from depth h_end to surface
     dh_ext = 1
     h_ext = np.arange(h[-1]+dh_ext, h_end+dh_ext, dh_ext)
 
@@ -364,7 +369,7 @@ def phi_vert_site(h, dh, H, h_end=2e3):
 
     R_int = R_vert_slhl(h_int) * np.exp(H/att_L(h_int))
 
-    Phi_site = np.flip(np.cumsum(np.flip(R_int * dh_int))) + (1-np.exp(H/att_L(h_end)))*Phi_end
+    Phi_site = np.flip(np.cumsum(np.flip(R_int * dh_int))) + Phi_end#*(1-np.exp(H/att_L(h_end))) # <- scale factor might be my mistake
 
     Phi_site = Phi_site[:len(h)]
 
@@ -504,6 +509,81 @@ def E_surf(Prop,
     """
 
     return ((E_d + a/b)*np.exp(X*b)-a/b).clip(min=Prop.E_bins[0])
+
+#log linear interp
+def interp_log_lin(x,
+                   x_grid,
+                   y_grid,
+                   axis=-1,
+                  ):
+    return np.nan_to_num(np.exp(interp1d(np.log(x_grid), np.log(y_grid), axis=axis, bounds_error=False, assume_sorted=True)(np.log(x))))
+
+# continuous muon energy loss function
+def cont_loss(Prop,
+              dEdX=None, # energy loss per unit slant depth traveled (should be positive!) (None = a+bE)
+              mode=0,
+             ):
+    if Prop is None: # run function with Prop=None to get input stage
+        return 'atm'
+    
+    Phi_atm = Prop.Phi['atm']
+    #Phi_atm
+    #axis0 - Atmospheric Model
+    #axis1 - Zenith Angle
+    #axis2 - Muon Charge (positive, negative)
+    #axis3 - Muon Energy
+
+    X = np.reshape(Prop.h_bins,(1,1,-1))/np.reshape(Prop.cosTH,(1,-1,1)) # slant-depth
+    
+    if dEdX is None:
+        E_surface = (Prop.E_mu.reshape((-1,1,1)) + Prop.a/Prop.b)*np.exp(X*Prop.b)-Prop.a/Prop.b
+        Phi_proj = np.sum(
+            [interp_log_lin(E_surface[:,i], Prop.E_mu, Phi_atm[:,i], axis=-1) * np.exp(X[0,i]*Prop.b).reshape((1,1,1,-1)) * Prop.dcosTH[i]
+             for i in tqdm(range(len(Prop.cosTH)))], axis=0) * 2 * np.pi
+    else:
+        dX = np.diff(X, axis=-1)
+        E_surface = np.zeros((len(Prop.E_mu), len(Prop.cosTH), len(Prop.h_bins)))
+        E_surface[:,:,0] = Prop.E_mu.reshape((-1,1))
+        
+        if mode==0: # linear dEdX
+            #d/dE dEdX(E) = dlogE/dE * d/dlogE dE/dX(logE)
+            #             = 1/E * dE/dX(E) * d/dlogE log dE/dX(logE)
+            b = np.diff(dEdX)/np.diff(Prop.E_mu)
+            dEsdE = np.zeros((len(Prop.E_mu), len(Prop.cosTH), len(Prop.h_bins)))
+            dEsdE[:,:,0] = 1.
+            for i in tqdm(range(dX.shape[-1])):
+                # energy change from depth h[i] to h[i+1]
+                E_surface[:,:,i+1] = E_surface[:,:,i] + np.interp(E_surface[:,:,i], Prop.E_mu, dEdX)*dX[:,:,i]
+                dEsdE[:,:,i+1] = dEsdE[:,:,i] + dEsdE[:,:,i]*b[np.digitize(E_surface[:,:,i], Prop.E_mu[1:-1])]*dX[:,:,i]
+        else: # log-linear dEdX
+            #d/dE dEdX(E) = dlogE/dE * d/dlogE dE/dX(logE)
+            #             = 1/E * dE/dX(E) * d/dlogE log dE/dX(logE)
+            b = np.diff(np.log(dEdX))/np.diff(np.log(Prop.E_mu))
+            dEsdE = np.zeros((len(Prop.E_mu), len(Prop.cosTH), len(Prop.h_bins)))
+            dEsdE[:,:,0] = 1.
+            for i in tqdm(range(dX.shape[-1])):
+                # energy change from depth h[i] to h[i+1]
+                E_surface[:,:,i+1] = E_surface[:,:,i] + interp_log_lin(E_surface[:,:,i], Prop.E_mu, dEdX, axis=0)*dX[:,:,i]
+                dEsdE[:,:,i+1] = dEsdE[:,:,i] + dEsdE[:,:,i]*b[np.digitize(E_surface[:,:,i], Prop.E_mu[1:-1])]/E_surface[:,:,i]*interp_log_lin(E_surface[:,:,i], Prop.E_mu, dEdX, axis=0)*dX[:,:,i]
+        #E_surface - Corresponding muon energy to energy grid at slant depth X = h/cosTH
+        #axis0 - Projected Energy
+        #axis1 - Zenith Angle
+        #axis2 - Depth Bins (top -> bottom)
+    
+        # interpolate phi at surface energy
+        # phi(E_underground) dE_underground = phi(E_surface) dE_surface
+        # phi(E_underground) = phi(E_surface) * dE_surface / dE_underground
+        # Don't forget to integrate over 2pi cos theta
+        Phi_proj = np.sum(
+            [interp_log_lin(E_surface[:,i], Prop.E_mu, Phi_atm[:,i], axis=-1) * dEsdE[:,i].reshape((1,1,len(Prop.E_mu),-1)) * Prop.dcosTH[i]
+             for i in tqdm(range(len(Prop.cosTH)))], axis=0) * 2 * np.pi
+    #Phi_proj - 
+    #axis0 - Atmopsheric Model
+    #axis1 - Muon Charge (positive, negative)
+    #axis2 - Muon Energy
+    #axis3 - Depth (top -> bottom)
+    
+    return Phi_proj
 
 def Heisinger_ice(Prop, 
                   #norm=True, 
@@ -918,7 +998,7 @@ def MCEq_mu_ice(Prop,
     #print('Calculating interaction & decay matrices...')
 
     if not (dEdX is None): # sets dE/dX to Heisinger approximation of Gaisser+Stanev energy loss function
-        if dEdX == "Heisinger":
+        if type(dEdX) is str: #Heisinger
             dEdX = -(Prop.a + Prop.b*mceq._energy_grid.c)/100
         mceq.matrix_builder._pman[-13].dEdX = dEdX
         mceq.matrix_builder._pman[13].dEdX = dEdX
