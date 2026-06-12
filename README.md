@@ -7,27 +7,27 @@ Setup python
 
 Install required libraries (below)
 
-You're good to go?
+Run the Notebook
 
 ### Required Python Libraries
 
 numpy
 
+scipy
+
 matplotlib
-
-MCEq
-
-crflux
 
 tqdm
 
 pandas
 
-astropy.io
+MCEq
+
+crflux
 
 daemonflux
 
-mute
+
 
 ## File Guide
 
@@ -41,9 +41,7 @@ mute
 
 **InSitu14CO Notebook.ipynb** - Notebook demonstrating how to use the Propagator class defined in InSitu14CO.py
 
-**Sensitivity Comparison.ipynb** - Notebook for calculating sensitivity of analysis to toy models, reproducing analysis done in Petrenko+ 2024
-
-**Uncertainty Test.ipynb** - Notebook for calculating systematic uncertainty in 14CO predictions
+**Technical Doc Notebook.ipynb** - 
 
 ### Datasets
 

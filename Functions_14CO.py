@@ -13,7 +13,7 @@ from MCEq.geometry.density_profiles import GeneralizedTarget
 
 import daemonflux
 
-import proposal as pp
+#import proposal as pp
 
 from scipy.interpolate import interp1d
 from scipy.io import loadmat
