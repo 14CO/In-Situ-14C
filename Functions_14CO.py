@@ -704,6 +704,31 @@ def Heisinger_norm(Prop, H = None):
     
     return Prop.Phi['ice'] / np.sum(Prop.Phi['ice'] * np.reshape(Prop.dE_mu,(1,1,-1,1)), axis=(1,2), keepdims=True) * np.reshape(phi_all(Prop.h_bins,np.append(Prop.dh,Prop.dh[-1]),Prop.H)[0], (1,1,1,-1))
 
+def Balco_P_mu_total(h, # mass depth in g/cm^2
+                     pressure, #pressure in (hPa)
+                     sigma190 = 4.5e-28, #cm^2
+                     f_tot = 1 * 0.1828 * 0.137,
+                     alpha = 0.75,
+                     N = 6.022e23 / 0.1802, #hg^-1
+                    ):
+    
+    h = h/100 #convert g/cm^2 to hg/cm^2
+    dh = np.diff(h)
+    dh = np.append(dh, dh[-1])
+    H = (1013.25 - pressure)*1.019716
+    
+    sigma_0 = sigma190/190**alpha
+    
+    E_pred, Beta_pred = Heisinger(h)
+
+    Phi, R = phi_all(h, dh, H) # Total Muon Flux, Negative Muon Stopping Rate
+
+    P_neg = R * f_tot
+
+    P_fast = sigma_0 * Phi * E_pred**alpha * Beta_pred * N
+
+    return P_neg /100 * 60 * 60 * 24 * 365.25, P_fast /100 * 60 * 60 * 24 * 365.25 # g^-1, a^-1
+
 
 def Heisinger_full(Prop, H=None):
     if Prop is None: # run function with Prop=None to get input stage
