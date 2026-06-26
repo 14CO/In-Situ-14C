@@ -10,7 +10,19 @@ from time import time
 
 from scipy.interpolate import interp1d
 
-
+# Firn air transport Model for Cosmogenic 14CO accumulation at Dome C
+# Matlab code by Christo Buizert
+# Centre for Ice & Climate, University of Copenhagen
+# College of Earth, Ocean and Atmospheric Sciences, Oregon State Univ
+# christo@nbi.ku.dk
+# buizertc@science.oregonstate.edu  
+#
+# Updates by Ben Hmiel of University of Rochester
+# bhmiel@ur.rochester.edu
+# bhmiel@edf.org
+#
+# Edited & adapted to python by Walter Cook of University of Rochester
+# wcook8@ur.rochester.edu
 
 #Credit to the top response of this stackoverflow question for converting the Matlab smooth function to python:
 #https://stackoverflow.com/questions/40443020/matlabs-smooth-implementation-n-point-moving-average-in-numpy-python
