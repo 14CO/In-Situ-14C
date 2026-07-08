@@ -454,7 +454,10 @@ class Propagator:
         real_z = np.array(ice_eq_depth['z']) # meters
         ice_eq_z = np.array(ice_eq_depth['ice_eq_z']) # meters (ice-eq) aka mass-depth / ice density
         
-        self.set_ice_profile(depths_real, np.interp(depths_real, real_z, ice_eq_z)*self.rho_ice, ages, h_bins, sample_depths, h_accum_bins)
+        cut_za = depths_real <= max(real_z)
+        cut_zh = real_z <= max(depths_real)
+        
+        self.set_ice_profile(depths_real[cut_za], np.interp(depths_real[cut_za], real_z[cut_zh], ice_eq_z[cut_zh])*self.rho_ice, ages[cut_za], h_bins, sample_depths, h_accum_bins)
         
         return
     
