@@ -244,7 +244,7 @@ def att_L(h):
                          4.945e2, 8.995e2, 1.101e3, 1.502e3, 2.103e3, 3.104e3, 4.104e3, 8.105e3, 1.011e4, 1.411e4,
                          2.011e4, 3.011e4, 4.011e4, 8.011e4, 1.001e5, 1.401e5, 2.001e5, 3.001e5, 4.001e5, 8.001e5])
 
-    P_MeVc = np.exp(np.interp(np.log(np.clip(h,1e-5,None)*100), np.log(h_range), np.log(momentum)))
+    P_MeVc = np.exp(np.interp(np.log(np.clip(h*100,min=1)), np.log(h_range), np.log(momentum)))
 
     return 263 + 150 * P_MeVc/1000
 
@@ -278,11 +278,16 @@ def phi_vert_slhl(h):
         1.66,    #p4
         75]      #p5
 
-    a = np.exp(p[1] * h)
-    b = h + p[2]
-    c = (h+p[3])**p[4] + p[5]
+    #a = np.exp(p[1] * h)
+    #b = h + p[2]
+    #c = (h+p[3])**p[4] + p[5]
 
-    Phi_v = p[0] * a / b / c  # cm^-2 s^-1 sr^-1
+    #Phi_v = p[0] * a / b / c  # cm^-2 s^-1 sr^-1
+    
+    z = h*100
+    a = 258.5*(100.**2.66)
+    b = 75*(100.**1.66)
+    Phi_v = (a/((z+21000)*(((z+1000)**1.66) + b)))*np.exp(-5.5e-6 * z)
 
     return Phi_v
 
@@ -312,15 +317,25 @@ def R_vert_slhl(h):
         1.66,    #p4
         75]      #p5
 
-    a = np.exp(p[1] * h)
-    b = h + p[2]
-    c = (h+p[3])**p[4] + p[5]
+    #a = np.exp(p[1] * h)
+    #b = h + p[2]
+    #c = (h+p[3])**p[4] + p[5]
 
-    dadh = p[1] * a
-    dbdh = 1.
-    dcdh = p[4] * (h+p[3])**(p[4]-1)
+    #dadh = p[1] * a
+    #dbdh = 1.
+    #dcdh = p[4] * (h+p[3])**(p[4]-1)
 
-    R_v = -p[0] * (b*c*dadh - a*c*dbdh - a*b*dcdh)/ b**2 / c**2  # hg^-1 s^-1 sr^-1
+    #R_v = -p[0] * (b*c*dadh - a*c*dbdh - a*b*dcdh)/ b**2 / c**2  # hg^-1 s^-1 sr^-1
+    
+    z = h*100
+    a = np.exp(-5.5e-6*z)
+    b = z + 21000
+    c = (z + 1000)**1.66 + 1.567e5
+    dadz = -5.5e-6 * np.exp(-5.5e-6*z)
+    dbdz = 1
+    dcdz = 1.66*(z + 1000)**0.66
+
+    R_v = -5.401e7 * (b*c*dadz - a*(c*dbdz + b*dcdz))/(b**2 * c**2) * 100 # hg^-1 s^-1 sr^-1
 
     return R_v
 
@@ -361,7 +376,7 @@ def phi_vert_site(h, dh, H, h_end=2e3):
     Phi_end = phi_vert_slhl(h_end)
     
     # integrate rescaled stopping rate from depth h_end to surface
-    dh_ext = 1
+    dh_ext = dh[-1]
     h_ext = np.arange(h[-1]+dh_ext, h_end+dh_ext, dh_ext)
 
     h_int = np.append(h, h_ext)
@@ -372,6 +387,8 @@ def phi_vert_site(h, dh, H, h_end=2e3):
     Phi_site = np.flip(np.cumsum(np.flip(R_int * dh_int))) + Phi_end#*(1-np.exp(H/att_L(h_end))) # <- scale factor might be my mistake
 
     Phi_site = Phi_site[:len(h)]
+    
+    #Phi_site = np.array([scipy.integrate.quad(lambda x: R_vert_slhl(x)*np.exp(H/att_L(x)), h_start, h_end+1e-2, epsabs=phi_vert_slhl(h_start)*1e-4)[0] for h_start in tqdm(h)]) + Phi_end
 
     return Phi_site, R_site
 
