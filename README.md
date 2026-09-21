@@ -1,32 +1,23 @@
 # In-Situ-14C-Production
-Calculates in-situ 14CO produced by cosmic ray muons in ice, starting from primary spectra at the top of the atmosphere
+
+Calculates in-situ 14CO produced by cosmic ray muons in ice, starting from primary spectra at the top of the atmosphere.
 
 ## Installation Guide
 
-Setup python
-
-Install required libraries (below)
-
-Run the Notebook
+1. Setup python
+1. Install required libraries (below)
+1. Run the Notebook
 
 ### Required Python Libraries
 
-numpy
-
-scipy
-
-matplotlib
-
-tqdm
-
-pandas
-
-MCEq
-
-crflux
-
-daemonflux
-
+* numpy
+* scipy
+* matplotlib
+* tqdm
+* pandas
+* MCEq
+* crflux
+* daemonflux
 
 ## File Guide
 
