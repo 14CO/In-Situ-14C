@@ -73,8 +73,22 @@ def make_bins(x):
     else:
         return x, (x[:-1]+x[1:])/2, np.abs(np.diff(x,axis=0))
 
+def interp_mat(out, grid_in, left=False, right=False): # interpolates from grid_in to out
+    # input arrays must have broadcastable shape
+    # grid's primary index should be along axis -1
+    # left/right control outer bounds : True = 
+    
+    # slope from 0 to 1 as x passes from lower to upper bound
+    slope = ((out[...,:-1 if out.shape[-1]>1 else None]-grid_in[...,:-1])/np.diff(grid_in,axis=-1)).clip(0,1)
+    return np.concatenate(
+        [(1-left)*(out[...,:1]>=grid_in[...,:1])-slope[...,:1],
+         -np.diff(slope, axis=-1),
+         slope[...,-1:]-(1-right)*(out[...,-1:]>grid_in[...,-1:])],
+        axis=-1)
 
-
+def bin_average_mat(out_up, out_low, in_low, din):
+    S = (out_up-in_low).clip(0,din) - (out_low-in_low).clip(0,din)
+    return S/np.sum(S, axis=-1, keepdims=True)
 
 ###############################################################################################
 #################################                ##############################################
@@ -213,9 +227,17 @@ class Site:
         return np.interp(h, self.h_grid, self.z_grid)
     def z_to_h(self, z):
         return np.interp(z, self.z_grid, self.h_grid)
-
     
-    
+    def accumulation_tensor(self, h_past, h_prod, t_int, const=False):
+        dt = np.diff(t_int)[0]
+        
+        if const:
+            A_ice = np.zeros(len(h_past), len(h_prod))
+            for i in tqdm(range(len(t_int))):
+                A_ice += interp_mat(h_past[:,i,None], h_prod[None,:]) * np.exp(self.lambd * t_int[i]) * dt
+        else:
+            A_ice = interp_mat(h_past[:,:,None], h_prod[None,None,:]) * np.exp(self.lambd * t_int[None,:,None]) * dt
+        return A_ice
     
     
 ###############################################################################################
@@ -745,8 +767,59 @@ class Firn_Site(Site):
         print(time()-t)
         return C14_open, C14_closed, C14_open_atm, C14_closed_atm, c_gases
 
-    
-    
+    def firn_tensor(self, h_f, h_prod, L, const=False, separate=False):
+        
+        if const:
+            print('Calculating Direct Accumulation...')
+            
+            A_grains = np.zeros((len(h_f), len(h_prod), len(L)))
+            A_closed = np.zeros((len(h_f), len(h_prod), len(L)))
+            
+            for i in tqdm(range(len(t_int))):
+                x = interp_mat(h_past[:,i,None], Prop_DC.h[None,:])[:,:,None] * np.exp(lambd * t_int[i]) * DC.dt_A
+                A_grains += x * (1-L[None,None,:])**(-t_int[i]+DC.dt_A)
+                A_closed += x * f_c_int[:,i,None,:]
+            
+            print('Calculating Leakage Rates...')
+            Leak_mat = np.zeros((DC.Q, len(Prop_DC.h), len(L)))
+
+            t_int_leak = np.arange(len(DC.t_A[t_D_cut]))*DC.dt_A
+            t_int_leak = t_int_leak - t_int_leak[-1]
+
+            for i in tqdm(range(len(t_int_leak))):
+                Leak_mat += interp_mat(h_D_past[:,i,None], Prop_DC.h[None,:])[:,:,None] * np.exp(lambd * t_int_leak[i]) * (1-L[None,None,:])**(-t_int_leak[i]) * (1-(1-L[None,None,:])**DC.dt_A)
+            Leak_mat *= (f_o_D * gram_to_ppm)[:,None,None]
+            
+            print('Calculating Diffusion...')
+            
+            Diff_mat = np.linalg.inv(np.identity(len(DC.D))-DC.D) * DC.dt_D
+            
+            print('Calculating Trapping Rates...')
+            
+            Trap_mat = np.zeros((len(z_f), DC.Q))
+
+            for i in tqdm(range(len(t_int))):
+                Trap_mat += interp_mat(z_past[:,i,None], DC.z_D[None,:DC.Q]) * np.exp(lambd * t_int[i]) * trap_frac[:,i,None] * DC.dt_A * ppm_to_gram_cl[:,None]
+
+            A_trap = np.einsum('fd, dpr -> fpr', Trap_mat @ Diff_mat, Leak_mat, optimize=True)
+
+        else:
+            print('Calculating Direct Accumulation...')
+            
+            A_grains = interp_mat(h_past[:,:,None], Prop_DC.h[None,None,:])[:,:,:,None] * np.exp(lambd * t_int[None,:,None,None]) * DC.dt_A * (1-L[None,None,None,:])**(-t_int[None,:,None,None]+DC.dt_A)
+            A_closed = interp_mat(h_past[:,:,None], Prop_DC.h[None,None,:])[:,:,:,None] * np.exp(lambd * t_int[None,:,None,None]) * DC.dt_A * f_c_int[:,:,None,:]
+            
+            print('Calculating Leakage Rates...')
+            
+            print('Calculating Diffusion...')
+            
+            print('Calculating Trapping Rates...')
+            
+        
+        if separate:
+            return A_grains, A_closed, A_trap
+        else:
+            return A_grains + A_closed + A_trap
     
 ###############################################################################################
 #################################                ##############################################
