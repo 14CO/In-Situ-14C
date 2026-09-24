@@ -17,6 +17,7 @@ dependencies = [
     "numpy",
     "scipy",
     "matplotlib",
+    "pandas",
     "tqdm",
     "mceq",
     "crflux",
