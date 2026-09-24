@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=84"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "in_situ_14c"
+dynamic = ["version"]
+description = "A Python package to compute 14C concentration in ice sheets."
+authors = [ { name="Walter Cook",      email="wcook8@ur.rochester.edu" },
+            { name="Segev BenZvi",     email="sbenzvi@ur.rochester.edu" },
+            { name="Vasilii Petrenko", email="vpetrenk@ur.rochester.edu" },
+            { name="Chriso Buizert",   email="christo.buizert@oregonstate.edu" }]
+license = "BSD-3-Clause",
+license-files = ["LICEN[CS]E*"]
+readme = {file = "README.md", content-type = "text/markdown"}
+
+requires-python = ">=3.12"
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "tqdm",
+    "pandas",
+    "MCEq",
+    "crflux",
+    "daemonflux",
+]
+
+[project.optional-dependencies]
+dev = ["hypothesis", "pytest", "nbval"]
+docs = ["numpydoc", "nbsphinx", "ipykernel", "tqdm[notebook]"]
+
+[project.urls]
+"Homepage" = "https://github.com/14CO/In-Situ-14C"
+"Bug Tracker" = "https://github.com/14CO/In-Situ-14C/issues"
+
+[tool.setuptools.dynamic]
+version = {attr = "in_situ_14c.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["py"]
+include = ["in_situ_14c", "in_situ_14c.*"]
