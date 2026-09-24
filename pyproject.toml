@@ -44,13 +44,10 @@ include = [
 ]
 exclude = [
     "in_situ_14c.scripts",
-    "in_situ_14c.data.config",
-    "in_situ_14c.data.processed",
-    "in_situ_14c.data.spectra"
 ]
 
 [tool.setuptools.package-data]
-"in_situ_14c.data.detector" = ["*.txt", "*.ecsv"]
-"in_situ_14c.data.stellar" = ["*.fits"]
-"in_situ_14c.data.USSR" = ["*.txt", "earth_survival_probability/*.txt"]
+"in_situ_14c.data" = ["*.csv"]
+"in_situ_14c.data.muon_spectrum_tables" = ["*.csv"]
+"in_situ_14c.data.matlab" = ["*.mat", "MC_14CO_mod/*.mat"]
 "in_situ_14c.etc" = ["in_situ_14c.rcParams", "*.yaml", "*.ini"]
