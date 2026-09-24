@@ -5,30 +5,26 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "in_situ_14c"
 dynamic = ["version"]
-description = "A Python package to compute 14C concentration in ice sheets."
-authors = [ { name="Walter Cook",      email="wcook8@ur.rochester.edu" },
-            { name="Segev BenZvi",     email="sbenzvi@ur.rochester.edu" },
-            { name="Vasilii Petrenko", email="vpetrenk@ur.rochester.edu" },
-            { name="Chriso Buizert",   email="christo.buizert@oregonstate.edu" }]
-license = "BSD-3-Clause",
+description = "A Python package to compute carbon-14 production in ice"
+authors = [{ name = "Walter Cook", email = "wcook8@ur.rochester.edu" }]
+license = "BSD-3-Clause"
 license-files = ["LICEN[CS]E*"]
 readme = {file = "README.md", content-type = "text/markdown"}
 
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 
 dependencies = [
     "numpy",
     "scipy",
     "matplotlib",
     "tqdm",
-    "pandas",
-    "MCEq",
+    "mceq",
     "crflux",
-    "daemonflux",
+    "daemonflux"
 ]
 
 [project.optional-dependencies]
-dev = ["hypothesis", "pytest", "nbval"]
+dev = ["hypothesis", "pytest", "pytest-cov", "coveralls"]
 docs = ["numpydoc", "nbsphinx", "ipykernel", "tqdm[notebook]"]
 
 [project.urls]
@@ -40,4 +36,21 @@ version = {attr = "in_situ_14c.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["py"]
-include = ["in_situ_14c", "in_situ_14c.*"]
+include = [
+    "in_situ_14c",
+    "in_situ_14c.*",
+    "in_situ_14c.data.*",
+    "in_situ_14c.etc",
+]
+exclude = [
+    "in_situ_14c.scripts",
+    "in_situ_14c.data.config",
+    "in_situ_14c.data.processed",
+    "in_situ_14c.data.spectra"
+]
+
+[tool.setuptools.package-data]
+"in_situ_14c.data.detector" = ["*.txt", "*.ecsv"]
+"in_situ_14c.data.stellar" = ["*.fits"]
+"in_situ_14c.data.USSR" = ["*.txt", "earth_survival_probability/*.txt"]
+"in_situ_14c.etc" = ["in_situ_14c.rcParams", "*.yaml", "*.ini"]
