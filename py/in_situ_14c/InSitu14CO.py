@@ -17,7 +17,7 @@ import pandas as pd
 #from cycler import cycler
 #from astropy.io import fits
 
-import Functions_14CO as F
+from . import Functions_14CO as F
 
 #from scipy import stats
 
