@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import scipy
 
-import Functions_14CO as F
+from . import Functions_14CO as F
 
 from tqdm import tqdm
 
