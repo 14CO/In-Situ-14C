@@ -17,6 +17,7 @@ import crflux.models as pm
 from tqdm import tqdm
 
 import pandas as pd
+from importlib.resources import files
 
 from . import Functions_14CO as F
 
@@ -28,7 +29,7 @@ from time import time
 
 # Site Variables
 lambd = 1.216e-4 # 14C differential decay rate [yr^-1]
-ice_eq_file = 'Real_vs_ice_eq_depth.csv'
+ice_eq_file = files('in_situ_14c.data').joinpath('Real_vs_ice_eq_depth.csv')
 elev = 3233 #Elevation above sea level [m]
 pressure = 65800 # air pressure (Pa)
 
