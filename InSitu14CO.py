@@ -997,7 +997,7 @@ class Propagator:
     def setup_mceq(self):
         from MCEq import config
 
-        interaction_model = "SIBYLL-2.3c"
+        interaction_model = "SIBYLL-2.3d"
 
         density_model, density_name = ('CORSIKA', ('USStd', None)), 'CORSIKA_USStd'
         
