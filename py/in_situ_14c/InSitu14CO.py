@@ -17,9 +17,11 @@ import crflux.models as pm
 from tqdm import tqdm
 
 import pandas as pd
-from importlib.resources import files
 
-from . import Functions_14CO as F
+from in_situ_14c import Functions_14CO as F
+
+from importlib.resources import files
+import pathlib
 
 from time import time
 
@@ -43,8 +45,8 @@ T = -54 # Temperature (Celsius)
 M_air = 28.96e-3 # molar mass of air (kg/mol)
 D_0eddy = 2.55e-5 # convective diffusivity const.
 H_eddy = 3 #1/e depth of convective layer
-age_file = 'DomeC_age_scale_Apr2023.csv' # sets depth-ice age conversion
-tort_file = 'Firn_Model_Tortuosity_DomeC.csv' # inverse tortuosity & diff_m profiles
+age_file = files('in_situ_14c.data').joinpath('DomeC_age_scale_Apr2023.csv') # sets depth-ice age conversion
+tort_file = files('in_situ_14c.data').joinpath('Firn_Model_Tortuosity_DomeC.csv') # inverse tortuosity & diff_m profiles
 dt_A = 0.5 # Accumulation time resolution [years]
 dt_D = 0.01 # Diffusion time resolution [years]
 dz_D = 0.25 # Diffusion depth bin width [meters]
@@ -151,17 +153,17 @@ class Site:
         
     def set_grids(self, z_grid=None, h_grid=None, rho=None):
         if z_grid is None:
-            if isinstance(h_grid, str):
+            if isinstance(h_grid, pathlib.PosixPath):
                 h_file = h_grid
                 z_grid, h_grid, rho = load_ice_eq_depth(h_file)
-            elif isinstance(rho, str):
+            elif isinstance(rho, pathlib.PosixPath):
                 rho_file = rho
                 z_grid, h_grid, rho = load_densities(rho_file)
             else:
                 print('No data for real depths')
         else:
             z_grid = np.array(z_grid)
-            if isinstance(h_grid, str):
+            if isinstance(h_grid, pathlib.PosixPath):
                 h_file = h_grid
                 z, h, rho1 = load_ice_eq_depth(h_file)
                 h_grid = np.interp(z_grid, z, h)
@@ -170,7 +172,7 @@ class Site:
                 h_grid = np.array(h_grid)
                 rho1 = smooth_diff(h_grid)/smooth_diff(z_grid)
                 
-            if isinstance(rho, str):
+            if isinstance(rho, pathlib.PosixPath):
                 rho_file = rho
                 z, h, rho1 = load_densities(rho_file)
                 h = np.interp(z_grid, z, h)
@@ -346,7 +348,7 @@ class Firn_Site(Site):
         self.Crank_abc()
         
     def set_age_scale(self, age_grid):
-        if isinstance(age_grid, str):
+        if isinstance(age_grid, pathlib.PosixPath):
             age_file = age_grid
             z,age = load_age_scale(age_file)
             age_grid = np.interp(self.z_grid, z, age)
@@ -998,7 +1000,7 @@ class Propagator:
     def setup_mceq(self):
         from MCEq import config
 
-        interaction_model = "SIBYLL-2.3c"
+        interaction_model = "SIBYLL-2.3d"
 
         density_model, density_name = ('CORSIKA', ('USStd', None)), 'CORSIKA_USStd'
         
